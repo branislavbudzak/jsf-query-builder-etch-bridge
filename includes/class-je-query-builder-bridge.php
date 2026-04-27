@@ -3,7 +3,18 @@
  * JetEngine Query Builder ↔ Etch Loop bridge.
  *
  * Standalone — runs without JetSmartFilters. Wrapper class is `je-etch-loop
- * je-q-{id}`. The bridge wholesale-replaces WP_Query args from the JE query.
+ * je-q-{id}`. The bridge intercepts the WP_*_Query that Etch's loop handler
+ * instantiates and replaces its args with the JE query's args.
+ *
+ * Supported JE query types and their Etch loop preset counterparts:
+ *
+ *   JE "posts"  → Etch wp-query / main-query  (pre_get_posts)
+ *   JE "users"  → Etch wp-users               (pre_user_query)
+ *   JE "terms"  → Etch wp-terms               (pre_get_terms)
+ *
+ * If JE query type doesn't match the firing hook, the bridge stays silent
+ * (waits for the matching hook to fire — or no-ops if Etch loop preset type
+ * doesn't align with JE query type).
  *
  * If JSF is also active and the wrapper carries `jsf-etch-loop` classes too,
  * priority order on `pre_get_posts` is:
@@ -29,8 +40,13 @@ class JE_Query_Builder_Bridge {
 		$this->stack = new State_Stack();
 
 		add_filter( 'pre_render_block', [ $this, 'on_pre_render_block' ], 4, 2 );
-		add_action( 'pre_get_posts', [ $this, 'replace_query_args_with_je' ], 40 );
 		add_filter( 'render_block', [ $this, 'on_render_block' ], 999, 2 );
+
+		// Dispatch by query type. Each handler checks JE query_type against
+		// its own expected type and skips if mismatched.
+		add_action( 'pre_get_posts', [ $this, 'on_pre_get_posts' ], 40 );
+		add_action( 'pre_user_query', [ $this, 'on_pre_user_query' ], 10 );
+		add_action( 'pre_get_terms', [ $this, 'on_pre_get_terms' ], 10 );
 	}
 
 	public static function get_classes( array $block ): string {
@@ -63,16 +79,13 @@ class JE_Query_Builder_Bridge {
 		return $pre;
 	}
 
-	public function replace_query_args_with_je( \WP_Query $query ): void {
+	/* -------------------- DISPATCHERS -------------------- */
+
+	public function on_pre_get_posts( \WP_Query $query ): void {
 		if ( is_admin() || wp_doing_ajax() ) {
 			return;
 		}
 		if ( $query->is_main_query() ) {
-			return;
-		}
-
-		$je_query_id = $this->stack->current();
-		if ( ! $je_query_id ) {
 			return;
 		}
 
@@ -83,30 +96,120 @@ class JE_Query_Builder_Bridge {
 			return;
 		}
 
+		$je_query = $this->resolve_je_query( 'posts' );
+		if ( ! $je_query ) {
+			return;
+		}
+
+		$je_args = $this->extract_args( $je_query );
+		if ( null === $je_args ) {
+			return;
+		}
+
+		// WP_Query has set() — stays compatible with internal cleanup logic.
+		foreach ( $je_args as $key => $value ) {
+			$query->set( $key, $value );
+		}
+		$query->set( '_jqbeb_je_query_id', $je_query->id ?? '' );
+
+		$this->stack->pop();
+	}
+
+	public function on_pre_user_query( \WP_User_Query $query ): void {
+		if ( is_admin() || wp_doing_ajax() ) {
+			return;
+		}
+
+		$je_query = $this->resolve_je_query( 'users' );
+		if ( ! $je_query ) {
+			return;
+		}
+
+		$je_args = $this->extract_args( $je_query );
+		if ( null === $je_args ) {
+			return;
+		}
+
+		// WP_User_Query has no set() — mutate query_vars directly.
+		foreach ( $je_args as $key => $value ) {
+			$query->query_vars[ $key ] = $value;
+		}
+		// Etch's WpUsersLoopHandler iterates over WP_User instances —
+		// force fields=all defensively in case JE returns IDs.
+		$query->query_vars['fields'] = 'all';
+
+		$this->stack->pop();
+	}
+
+	public function on_pre_get_terms( \WP_Term_Query $query ): void {
+		if ( is_admin() || wp_doing_ajax() ) {
+			return;
+		}
+
+		$je_query = $this->resolve_je_query( 'terms' );
+		if ( ! $je_query ) {
+			return;
+		}
+
+		$je_args = $this->extract_args( $je_query );
+		if ( null === $je_args ) {
+			return;
+		}
+
+		foreach ( $je_args as $key => $value ) {
+			$query->query_vars[ $key ] = $value;
+		}
+		// Etch's WpTermsLoopHandler iterates over WP_Term instances —
+		// force fields=all defensively in case JE returns IDs.
+		$query->query_vars['fields'] = 'all';
+
+		$this->stack->pop();
+	}
+
+	/* -------------------- SHARED LOOKUP / ARGS -------------------- */
+
+	/**
+	 * Looks up the JE query at the top of the stack and returns it ONLY if
+	 * its `query_type` matches the expected type. Returns null on mismatch
+	 * (without popping — the matching hook handler will pop). Returns null
+	 * also on missing manager / missing query / unsupported type — and pops
+	 * in those terminal cases to avoid stuck state.
+	 */
+	private function resolve_je_query( string $expected_type ) {
+		$je_query_id = $this->stack->current();
+		if ( ! $je_query_id ) {
+			return null;
+		}
+
 		if ( ! class_exists( '\Jet_Engine\Query_Builder\Manager' ) ) {
 			$this->debug( 'JetEngine Query_Builder Manager not available' );
 			$this->stack->pop();
-			return;
+			return null;
 		}
 
-		$manager  = \Jet_Engine\Query_Builder\Manager::instance();
-		$je_query = $manager->get_query_by_id( $je_query_id );
-
+		$je_query = \Jet_Engine\Query_Builder\Manager::instance()->get_query_by_id( $je_query_id );
 		if ( ! $je_query ) {
 			$this->debug( 'JE query not found: ' . $je_query_id );
 			$this->stack->pop();
-			return;
+			return null;
 		}
 
-		// Only "posts" type — Etch loop iterates WP_Post.
 		$query_type = property_exists( $je_query, 'query_type' ) ? $je_query->query_type : '';
-		if ( $query_type && $query_type !== 'posts' ) {
-			$this->debug( 'JE query type "' . $query_type . '" unsupported (posts only)' );
-			$this->stack->pop();
-			return;
+
+		// Mismatch — silently skip without popping. The matching hook will
+		// fire later (or won't, if the Etch preset type doesn't align).
+		if ( $query_type !== $expected_type ) {
+			return null;
 		}
 
-		// Inject pagination from URL params (JSF or plain pagination).
+		return $je_query;
+	}
+
+	/**
+	 * Inject pagination from URL into the JE query, then return its args.
+	 * Returns null if the args are empty (caller pops in that case).
+	 */
+	private function extract_args( $je_query ): ?array {
 		if ( method_exists( $je_query, 'set_filtered_prop' ) ) {
 			foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
 				if ( ! empty( $_REQUEST[ $page_key ] ) ) {
@@ -119,24 +222,15 @@ class JE_Query_Builder_Bridge {
 		$je_args = $je_query->get_query_args();
 		if ( ! is_array( $je_args ) || empty( $je_args ) ) {
 			$this->stack->pop();
-			return;
+			return null;
 		}
 
-		// Wholesale replace. JE args already passed through
-		// 'jet-engine/query-builder/types/posts-query/args' filter.
-		foreach ( $je_args as $key => $value ) {
-			$query->set( $key, $value );
-		}
-
-		// Marker for debug / Query Monitor.
-		$query->set( '_jqbeb_je_query_id', $je_query_id );
-
-		$this->stack->pop();
+		return $je_args;
 	}
 
+	/* -------------------- SAFETY-NET POP -------------------- */
+
 	public function on_render_block( $block_content, $block ) {
-		// Safety-net pop: if pre_get_posts didn't fire (no inner WP_Query),
-		// state may still hold this query_id. Drain matching wrappers.
 		if ( wp_doing_ajax() || is_admin() ) {
 			return $block_content;
 		}
@@ -147,6 +241,7 @@ class JE_Query_Builder_Bridge {
 		if ( ! preg_match( '/\bje-etch-loop\b/i', $classes ) ) {
 			return $block_content;
 		}
+		// Pop if a hook didn't claim it (e.g. preset type / JE type mismatch).
 		if ( ! $this->stack->is_empty() ) {
 			$this->stack->pop();
 		}
