@@ -27,8 +27,10 @@ class JSF_Bridge {
 		add_action( 'pre_get_posts', [ $this, 'tag_query_for_jsf' ], 50 );
 		add_filter( 'render_block', [ $this, 'on_render_block' ], 999, 2 );
 
-		add_action( 'wp_enqueue_scripts', [ $this, 'register_count_script' ] );
-		add_action( 'wp_footer', [ $this, 'output_footer_data' ], 999 );
+		add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_count_script' ] );
+		// Priority 5 so it runs before wp_print_footer_scripts (p20).
+		// By then loops have rendered and query props are populated.
+		add_action( 'wp_footer', [ $this, 'output_footer_data' ], 5 );
 
 		add_filter( 'jet-smart-filters/pre-get-indexed-data', [ $this, 'compute_indexed_counts' ], 10, 4 );
 
@@ -190,8 +192,8 @@ class JSF_Bridge {
 
 	/* -------------------- COUNT SCRIPT -------------------- */
 
-	public function register_count_script(): void {
-		wp_register_script(
+	public function enqueue_count_script(): void {
+		wp_enqueue_script(
 			'jqbeb-count',
 			JQBEB_URL . 'assets/js/count.js',
 			[],
@@ -217,7 +219,6 @@ class JSF_Bridge {
 			? [ 'etch-loop' => $all_props['etch-loop'] ]
 			: [ 'etch-loop' => (object) [] ];
 
-		wp_enqueue_script( 'jqbeb-count' );
 		wp_add_inline_script(
 			'jqbeb-count',
 			'window.JQBEBData = ' . wp_json_encode( $payload ) . ';',
