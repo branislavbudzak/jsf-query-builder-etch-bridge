@@ -8,22 +8,39 @@
  *
  * Supported JE query types and their Etch loop preset counterparts:
  *
- *   JE "posts"  → Etch wp-query / main-query  (pre_get_posts)
- *   JE "users"  → Etch wp-users               (pre_user_query)
- *   JE "terms"  → Etch wp-terms               (pre_get_terms)
+ *   JE 'posts'        → Etch wp-query / main-query  (pre_get_posts)
+ *   JE 'users'        → Etch wp-users               (pre_user_query)
+ *   JE 'terms'        → Etch wp-terms               (pre_get_terms)
+ *   JE Merged_Query   → same hook as the merge's base_query_type, BUT the
+ *                       integration is different (see Merged section below)
  *
- * If JE query type doesn't match the firing hook, the bridge stays silent
- * (waits for the matching hook to fire — or no-ops if Etch loop preset type
- * doesn't align with JE query type).
+ * Merged_Query handling
+ * ---------------------
+ * Merged_Query is same-type only — its `query_type` reports its base type
+ * ('posts' / 'users' / 'terms'). It exposes no single WP_*_Query for us to
+ * intercept; instead, sub-queries each run their own underlying query and
+ * results are concatenated. Calling `get_query_args()` on a Merged_Query
+ * returns a meaningless array_merge of all sub-queries' args (used by JE
+ * only as a cache hash) — passing it to a WP_Query would corrupt the loop.
  *
- * If JSF is also active and the wrapper carries `jsf-etch-loop` classes too,
+ * Strategy: pre-fetch the merged result via `$merged->get_items()`, extract
+ * IDs, and feed them to the firing query as `post__in` / `include`. The
+ * underlying WP_*_Query then only resolves those IDs in their original
+ * order, and built-in pagination is disabled (JE has already paginated
+ * internally via `_page` + `max_items_per_page`).
+ *
+ * If JSF is also active and the wrapper carries `jsf-etch-loop` classes,
  * priority order on `pre_get_posts` is:
  *
  *   p4  pre_render_block  → JE captures wrapper
  *   p4  pre_render_block  → JSF captures wrapper
- *   p40 pre_get_posts     → JE wholesale-replaces args
+ *   p40 pre_get_posts     → JE replaces args
  *   p50 pre_get_posts     → JSF tags query for filter merge
  *   p60 pre_get_posts     → JSF merges filter args on top of JE base
+ *
+ * Note: JSF + Merged_Query is not a supported combination — JSF expects a
+ * standard SQL-backed WP_Query and merges meta_query/tax_query into it,
+ * but Merged bypasses the SQL by predefining `post__in`.
  *
  * @package JQBEB
  */
@@ -101,16 +118,11 @@ class JE_Query_Builder_Bridge {
 			return;
 		}
 
-		$je_args = $this->extract_args( $je_query );
-		if ( null === $je_args ) {
-			return;
+		if ( $this->is_merged( $je_query ) ) {
+			$this->apply_merged_to_posts( $query, $je_query );
+		} else {
+			$this->apply_regular_to_posts( $query, $je_query );
 		}
-
-		// WP_Query has set() — stays compatible with internal cleanup logic.
-		foreach ( $je_args as $key => $value ) {
-			$query->set( $key, $value );
-		}
-		$query->set( '_jqbeb_je_query_id', $je_query->id ?? '' );
 
 		$this->stack->pop();
 	}
@@ -125,18 +137,11 @@ class JE_Query_Builder_Bridge {
 			return;
 		}
 
-		$je_args = $this->extract_args( $je_query );
-		if ( null === $je_args ) {
-			return;
+		if ( $this->is_merged( $je_query ) ) {
+			$this->apply_merged_to_users( $query, $je_query );
+		} else {
+			$this->apply_regular_to_users( $query, $je_query );
 		}
-
-		// WP_User_Query has no set() — mutate query_vars directly.
-		foreach ( $je_args as $key => $value ) {
-			$query->query_vars[ $key ] = $value;
-		}
-		// Etch's WpUsersLoopHandler iterates over WP_User instances —
-		// force fields=all defensively in case JE returns IDs.
-		$query->query_vars['fields'] = 'all';
 
 		$this->stack->pop();
 	}
@@ -151,19 +156,147 @@ class JE_Query_Builder_Bridge {
 			return;
 		}
 
-		$je_args = $this->extract_args( $je_query );
-		if ( null === $je_args ) {
-			return;
+		if ( $this->is_merged( $je_query ) ) {
+			$this->apply_merged_to_terms( $query, $je_query );
+		} else {
+			$this->apply_regular_to_terms( $query, $je_query );
 		}
-
-		foreach ( $je_args as $key => $value ) {
-			$query->query_vars[ $key ] = $value;
-		}
-		// Etch's WpTermsLoopHandler iterates over WP_Term instances —
-		// force fields=all defensively in case JE returns IDs.
-		$query->query_vars['fields'] = 'all';
 
 		$this->stack->pop();
+	}
+
+	/* -------------------- REGULAR QUERY APPLICATION -------------------- */
+
+	private function apply_regular_to_posts( \WP_Query $query, $je_query ): void {
+		$args = $this->get_args_with_pagination( $je_query );
+		if ( null === $args ) {
+			return;
+		}
+		foreach ( $args as $key => $value ) {
+			$query->set( $key, $value );
+		}
+		$query->set( '_jqbeb_je_query_id', $je_query->id ?? '' );
+	}
+
+	private function apply_regular_to_users( \WP_User_Query $query, $je_query ): void {
+		$args = $this->get_args_with_pagination( $je_query );
+		if ( null === $args ) {
+			return;
+		}
+		foreach ( $args as $key => $value ) {
+			$query->query_vars[ $key ] = $value;
+		}
+		$query->query_vars['fields'] = 'all';
+	}
+
+	private function apply_regular_to_terms( \WP_Term_Query $query, $je_query ): void {
+		$args = $this->get_args_with_pagination( $je_query );
+		if ( null === $args ) {
+			return;
+		}
+		foreach ( $args as $key => $value ) {
+			$query->query_vars[ $key ] = $value;
+		}
+		$query->query_vars['fields'] = 'all';
+	}
+
+	/* -------------------- MERGED QUERY APPLICATION -------------------- */
+
+	private function apply_merged_to_posts( \WP_Query $query, $je_query ): void {
+		$ids = $this->extract_merged_ids( $je_query );
+
+		// Empty merged set: post 0 never matches → empty loop.
+		if ( empty( $ids ) ) {
+			$ids = [ 0 ];
+		}
+
+		// Reset everything that would otherwise re-paginate or override
+		// our pre-fetched ID list.
+		$query->set( 'post__in', $ids );
+		$query->set( 'orderby', 'post__in' );
+		$query->set( 'posts_per_page', -1 );
+		$query->set( 'paged', 1 );
+		$query->set( 'nopaging', true );
+		$query->set( 'no_found_rows', true );
+		$query->set( 'ignore_sticky_posts', true );
+		// Allow any post type — JE merged set may span types.
+		$query->set( 'post_type', 'any' );
+		$query->set( 'post_status', 'any' );
+		$query->set( '_jqbeb_je_query_id', $je_query->id ?? '' );
+		$query->set( '_jqbeb_je_merged', true );
+	}
+
+	private function apply_merged_to_users( \WP_User_Query $query, $je_query ): void {
+		$ids = $this->extract_merged_ids( $je_query );
+
+		if ( empty( $ids ) ) {
+			$ids = [ 0 ];
+		}
+
+		$query->query_vars['include'] = $ids;
+		$query->query_vars['orderby'] = 'include';
+		$query->query_vars['number']  = 0; // 0 = no limit, return all included.
+		$query->query_vars['paged']   = 1;
+		$query->query_vars['fields']  = 'all';
+	}
+
+	private function apply_merged_to_terms( \WP_Term_Query $query, $je_query ): void {
+		$ids = $this->extract_merged_ids( $je_query );
+
+		if ( empty( $ids ) ) {
+			$ids = [ 0 ];
+		}
+
+		$query->query_vars['include']    = $ids;
+		$query->query_vars['orderby']    = 'include';
+		$query->query_vars['number']     = 0;
+		$query->query_vars['offset']     = 0;
+		$query->query_vars['hide_empty'] = false;
+		$query->query_vars['fields']     = 'all';
+	}
+
+	/**
+	 * Pre-fetch merged items and extract their IDs.
+	 *
+	 * - WP_Post / WP_User → ->ID
+	 * - WP_Term → ->term_id
+	 *
+	 * Pagination is delegated to the merged query via set_filtered_prop('_page').
+	 */
+	private function extract_merged_ids( $je_query ): array {
+		if ( method_exists( $je_query, 'set_filtered_prop' ) ) {
+			foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
+				if ( ! empty( $_REQUEST[ $page_key ] ) ) {
+					$je_query->set_filtered_prop( '_page', absint( $_REQUEST[ $page_key ] ) );
+					break;
+				}
+			}
+		}
+
+		if ( ! method_exists( $je_query, 'get_items' ) ) {
+			$this->debug( 'Merged_Query missing get_items()' );
+			return [];
+		}
+
+		$items = $je_query->get_items();
+		if ( ! is_array( $items ) ) {
+			return [];
+		}
+
+		$ids = [];
+		foreach ( $items as $item ) {
+			if ( $item instanceof \WP_Post || $item instanceof \WP_User ) {
+				$ids[] = (int) $item->ID;
+			} elseif ( $item instanceof \WP_Term ) {
+				$ids[] = (int) $item->term_id;
+			} elseif ( is_object( $item ) && isset( $item->ID ) ) {
+				$ids[] = (int) $item->ID;
+			} elseif ( is_object( $item ) && isset( $item->term_id ) ) {
+				$ids[] = (int) $item->term_id;
+			}
+		}
+
+		return array_values( array_unique( $ids ) );
 	}
 
 	/* -------------------- SHARED LOOKUP / ARGS -------------------- */
@@ -172,8 +305,8 @@ class JE_Query_Builder_Bridge {
 	 * Looks up the JE query at the top of the stack and returns it ONLY if
 	 * its `query_type` matches the expected type. Returns null on mismatch
 	 * (without popping — the matching hook handler will pop). Returns null
-	 * also on missing manager / missing query / unsupported type — and pops
-	 * in those terminal cases to avoid stuck state.
+	 * also on missing manager / missing query — and pops in those terminal
+	 * cases to avoid stuck state.
 	 */
 	private function resolve_je_query( string $expected_type ) {
 		$je_query_id = $this->stack->current();
@@ -205,11 +338,15 @@ class JE_Query_Builder_Bridge {
 		return $je_query;
 	}
 
+	private function is_merged( $je_query ): bool {
+		return $je_query instanceof \Jet_Engine\Query_Builder\Queries\Merged_Query;
+	}
+
 	/**
 	 * Inject pagination from URL into the JE query, then return its args.
-	 * Returns null if the args are empty (caller pops in that case).
+	 * Returns null if args are empty (caller pops in that case).
 	 */
-	private function extract_args( $je_query ): ?array {
+	private function get_args_with_pagination( $je_query ): ?array {
 		if ( method_exists( $je_query, 'set_filtered_prop' ) ) {
 			foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
 				if ( ! empty( $_REQUEST[ $page_key ] ) ) {
@@ -221,7 +358,6 @@ class JE_Query_Builder_Bridge {
 
 		$je_args = $je_query->get_query_args();
 		if ( ! is_array( $je_args ) || empty( $je_args ) ) {
-			$this->stack->pop();
 			return null;
 		}
 
