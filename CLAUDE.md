@@ -77,6 +77,7 @@ These were the foot-guns discovered during initial development. All have to rema
 | `je-etch-loop` | JE bridge — marks any Etch loop wrapper to use a JE query as data source |
 | `je-q-{id}` | JE bridge — numeric JE query ID OR custom query_id slug |
 | `je-as-{posts\|users\|terms}` | JE bridge — explicit target type override for SQL queries (also works as override for any JE query if `cast_object_to` inference is wrong) |
+| `je-jsf-stack` | JE bridge — opt-in JSF compatibility for Merged / SQL: bridge fetches the FULL JE result set (overrides `max_items_per_page` / `limit_per_page` / `limit` / `_page` to 0/1) and does NOT force-disable WP_Query pagination flags. Required to make JSF filters / pagination / `[jsf_etch_count]` work for Merged / SQL Posts loops. Must be combined with `jsf-etch-loop` to actually engage JSF. |
 
 Both bridges can coexist on the same wrapper. Class extraction reads only `attrs.attributes.class`.
 
@@ -129,8 +130,8 @@ git push origin main
 ## Limitations to remember
 
 - **JE Repeater / Comments / Current_WP_Query types are NOT supported.** Etch has no compatible loop handler. Adding them would require an Etch core change (filter on `LoopHandlerManager::get_loop_preset_data()`) — see plan history. Don't try to add them via reflection / monkey-patch.
-- **JSF integration is Posts-only and only for regular Posts queries.** JSF filters / pagination / sort do not drive Users / Terms / Merged / SQL loops. Adding it would require subclassing `Jet_Smart_Filters_Provider_Base` once per type with separate selectors.
-- **JSF + Merged / SQL is not supported.** JSF expects a SQL-backed query and adds `meta_query` / `tax_query` constraints — Merged and SQL bridges predefine results via `post__in`, so JSF's filter merge would be silently ignored.
+- **JSF integration is Posts-only.** JSF filters / pagination / sort do not drive Users / Terms loops. Adding it would require subclassing `Jet_Smart_Filters_Provider_Base` once per type with separate selectors.
+- **JSF + Merged / SQL works ONLY in `je-jsf-stack` mode.** Default Merged / SQL behaviour fetches a JE-paginated slice (one page) and force-disables WP_Query pagination, which breaks JSF and the count shortcode. With `je-jsf-stack`, the bridge fetches the FULL JE filter set, leaves WP_Query pagination flags alone, and lets WP_Query / JSF natively paginate the `post__in` subset. Cost: full fetch on every render — fine for moderate sets, expensive for large ones.
 - **SQL queries must return a recognisable ID column.** The heuristic looks for `ID` / `id` / `post_id` / `user_id` / `term_id`. Rows without one are silently skipped during ID extraction.
 - **Only `loopId`-mode Etch loops are bridged.** `target` / expression mode bypasses `WP_Query` entirely.
 - **Filter Indexer counts skip range filters and JetEngine CCT (custom meta tables).** Only `tax_query` and `meta_query` are supported.

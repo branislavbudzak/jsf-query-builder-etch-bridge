@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 0.4.0
+Stable tag: 0.5.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -40,8 +40,8 @@ Each bridge runs on its own. Use either, both, or none.
 
 * JE bridge supports Posts, Users, Terms, Merged Query, and SQL types. Repeater / Comments are not supported (no compatible Etch loop preset).
 * JE query type and Etch loop preset type must match (Posts↔wp-query, Users↔wp-users, Terms↔wp-terms). For Merged Query, match the merge's base type. For SQL, the target type is inferred from `cast_object_to` or `je-as-{type}` wrapper class hint.
-* JSF integration is Posts-only and only for regular Posts queries — JSF filters do not drive Users / Terms / Merged / SQL loops.
-* Combining JSF with Merged or SQL queries is not supported (JSF expects a SQL-backed query, Merged/SQL predefine results via post__in).
+* JSF integration with regular Posts queries works out of the box. For Merged / SQL Posts queries, opt in by adding `je-jsf-stack` wrapper class (full JE fetch + native WP_Query / JSF pagination + working `[jsf_etch_count]` shortcode).
+* JSF integration with Users / Terms loops is NOT supported (no JSF content provider for those types in this version).
 * SQL queries must return a recognisable ID column (`ID` / `id` / `post_id` / `user_id` / `term_id`). Rows without one are skipped.
 * Only loopId-mode Etch loops are supported (target / expression mode bypasses WP_Query).
 * JSF Filter Indexer counts skip range filters and CCT (custom meta tables).
@@ -53,6 +53,12 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 0.5.0 =
+* New opt-in mode `je-jsf-stack` for Merged / SQL queries: enables JSF filter / pagination / sort + the `[jsf_etch_count]` shortcode by fetching the full JE result set and letting WP_Query / JSF natively paginate the `post__in` subset.
+* Bridge overrides JE pagination caps (`max_items_per_page` / `limit_per_page` / `limit` / `_page`) only when the wrapper carries `je-jsf-stack`. Default mode unchanged (JE owns pagination).
+* Wrapper class hint state is now encoded as pipe-separated tokens (`{id}|as={type}|stack=1`).
+* Admin docs: dedicated section for `je-jsf-stack` with required wrapper combo, behaviour notes, and trade-offs.
 
 = 0.4.0 =
 * JE Query Builder bridge: added support for SQL queries.

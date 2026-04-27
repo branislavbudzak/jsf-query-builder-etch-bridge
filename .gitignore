@@ -4,6 +4,7 @@ node_modules/
 vendor/
 .idea/
 .vscode/
+.claude/
 *.log
 *.swp
 *.swo

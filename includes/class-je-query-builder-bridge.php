@@ -15,6 +15,13 @@
  *   JE 'sql'          → routed by cast_object_to or je-as-{type} hint
  *                       (pre-fetched, IDs fed via post__in / include)
  *
+ * Wrapper class hints
+ * -------------------
+ *   je-as-{posts|users|terms}  override target type (mainly for SQL)
+ *   je-jsf-stack               opt-in JSF compatibility mode for Merged/SQL
+ *                              (fetch all JE items, let WP_Query / JSF
+ *                              natively paginate + filter the post__in subset)
+ *
  * Merged + SQL handling
  * ---------------------
  * Both Merged_Query and SQL_Query bypass our hook-based wholesale-replace
@@ -22,12 +29,23 @@
  * Strategy: pre-fetch via `$je_query->get_items()`, extract IDs, and feed
  * them to the firing Etch-instantiated query as `post__in` / `include`.
  *
- * For SQL, the target type (posts / users / terms) is inferred from:
- *   1. wrapper class hint `je-as-posts` / `je-as-users` / `je-as-terms`
- *   2. JE SQL query's `cast_object_to` setting (WP_Post / WP_User / WP_Term)
- *   3. default: `posts`
+ * Default mode (no je-jsf-stack):
+ *   - JE paginates internally (set_filtered_prop _page from URL)
+ *   - get_items() returns the current JE page only
+ *   - WP_Query pagination is force-disabled (posts_per_page=-1, nopaging,
+ *     no_found_rows) — we already have the right slice
+ *   - JSF / counts shortcode are NOT supported for Merged/SQL in this mode
  *
- * If JSF is also active and the wrapper carries `jsf-etch-loop` classes,
+ * je-jsf-stack mode:
+ *   - JE pagination is overridden (max_items_per_page / limit_per_page /
+ *     limit set to 0, _page=1) → get_items() returns ALL items
+ *   - WP_Query pagination flags are NOT set → preset / JSF can paginate
+ *   - JSF filter merging works (meta_query / tax_query intersect with
+ *     post__in subset). Found_posts is computed correctly.
+ *   - [jsf_etch_count] shortcode shows real counts of the filtered subset.
+ *   - Cost: full JE result set is fetched on every render.
+ *
+ * If JSF is active and the wrapper carries `jsf-etch-loop` classes,
  * priority order on `pre_get_posts` is:
  *
  *   p4  pre_render_block  → JE captures je-etch-loop wrapper
@@ -35,10 +53,6 @@
  *   p40 pre_get_posts     → JE replaces args
  *   p50 pre_get_posts     → JSF tags query for filter merge
  *   p60 pre_get_posts     → JSF merges filter args on top of JE base
- *
- * Note: JSF + Merged/SQL is not supported — JSF expects a SQL-backed
- * WP_Query and merges meta_query/tax_query into it, but Merged/SQL
- * predefine the result set via post__in.
  *
  * @package JQBEB
  */
@@ -82,6 +96,10 @@ class JE_Query_Builder_Bridge {
 		return null;
 	}
 
+	public static function has_jsf_stack_hint( string $classes ): bool {
+		return (bool) preg_match( '/\bje-jsf-stack\b/i', $classes );
+	}
+
 	public function on_pre_render_block( $pre, $block ) {
 		if ( wp_doing_ajax() || is_admin() ) {
 			return $pre;
@@ -97,11 +115,18 @@ class JE_Query_Builder_Bridge {
 		if ( ! $query_id ) {
 			return $pre;
 		}
-		// Encode optional `je-as-{type}` hint into the stack value so the
-		// dispatcher can use it during SQL target type inference.
+
+		// Encode optional hints into the stack value.
+		// Format: {id}[|as={type}][|stack=1]
+		$parts   = [ $query_id ];
 		$as_hint = self::extract_as_hint( $classes );
-		$state   = $as_hint ? $query_id . '|as=' . $as_hint : $query_id;
-		$this->stack->push( $state );
+		if ( $as_hint ) {
+			$parts[] = 'as=' . $as_hint;
+		}
+		if ( self::has_jsf_stack_hint( $classes ) ) {
+			$parts[] = 'stack=1';
+		}
+		$this->stack->push( implode( '|', $parts ) );
 		return $pre;
 	}
 
@@ -122,15 +147,16 @@ class JE_Query_Builder_Bridge {
 			return;
 		}
 
-		$je_query = $this->resolve_je_query( 'posts' );
-		if ( ! $je_query ) {
+		$resolved = $this->resolve_je_query( 'posts' );
+		if ( ! $resolved ) {
 			return;
 		}
+		[ $je_query, $hints ] = $resolved;
 
 		if ( $this->is_merged( $je_query ) ) {
-			$this->apply_ids_to_posts( $query, $je_query, 'merged' );
+			$this->apply_ids_to_posts( $query, $je_query, 'merged', $hints['jsf_stack'] );
 		} elseif ( $this->is_sql( $je_query ) ) {
-			$this->apply_ids_to_posts( $query, $je_query, 'sql' );
+			$this->apply_ids_to_posts( $query, $je_query, 'sql', $hints['jsf_stack'] );
 		} else {
 			$this->apply_regular_to_posts( $query, $je_query );
 		}
@@ -143,15 +169,14 @@ class JE_Query_Builder_Bridge {
 			return;
 		}
 
-		$je_query = $this->resolve_je_query( 'users' );
-		if ( ! $je_query ) {
+		$resolved = $this->resolve_je_query( 'users' );
+		if ( ! $resolved ) {
 			return;
 		}
+		[ $je_query, $hints ] = $resolved;
 
-		if ( $this->is_merged( $je_query ) ) {
-			$this->apply_ids_to_users( $query, $je_query );
-		} elseif ( $this->is_sql( $je_query ) ) {
-			$this->apply_ids_to_users( $query, $je_query );
+		if ( $this->is_merged( $je_query ) || $this->is_sql( $je_query ) ) {
+			$this->apply_ids_to_users( $query, $je_query, $hints['jsf_stack'] );
 		} else {
 			$this->apply_regular_to_users( $query, $je_query );
 		}
@@ -164,15 +189,14 @@ class JE_Query_Builder_Bridge {
 			return;
 		}
 
-		$je_query = $this->resolve_je_query( 'terms' );
-		if ( ! $je_query ) {
+		$resolved = $this->resolve_je_query( 'terms' );
+		if ( ! $resolved ) {
 			return;
 		}
+		[ $je_query, $hints ] = $resolved;
 
-		if ( $this->is_merged( $je_query ) ) {
-			$this->apply_ids_to_terms( $query, $je_query );
-		} elseif ( $this->is_sql( $je_query ) ) {
-			$this->apply_ids_to_terms( $query, $je_query );
+		if ( $this->is_merged( $je_query ) || $this->is_sql( $je_query ) ) {
+			$this->apply_ids_to_terms( $query, $je_query, $hints['jsf_stack'] );
 		} else {
 			$this->apply_regular_to_terms( $query, $je_query );
 		}
@@ -217,8 +241,8 @@ class JE_Query_Builder_Bridge {
 
 	/* -------------------- ID-FED QUERY APPLICATION (Merged + SQL) -------------------- */
 
-	private function apply_ids_to_posts( \WP_Query $query, $je_query, string $marker ): void {
-		$ids = $this->extract_ids_from_get_items( $je_query );
+	private function apply_ids_to_posts( \WP_Query $query, $je_query, string $marker, bool $jsf_stack ): void {
+		$ids = $this->extract_ids_from_get_items( $je_query, $jsf_stack );
 
 		// Empty result → post 0 never matches → empty loop. Better than
 		// leaving the query unmodified (which would render Etch's preset).
@@ -228,19 +252,32 @@ class JE_Query_Builder_Bridge {
 
 		$query->set( 'post__in', $ids );
 		$query->set( 'orderby', 'post__in' );
-		$query->set( 'posts_per_page', -1 );
-		$query->set( 'paged', 1 );
-		$query->set( 'nopaging', true );
-		$query->set( 'no_found_rows', true );
 		$query->set( 'ignore_sticky_posts', true );
 		$query->set( 'post_type', 'any' );
 		$query->set( 'post_status', 'any' );
 		$query->set( '_jqbeb_je_query_id', $je_query->id ?? '' );
 		$query->set( '_jqbeb_je_' . $marker, true );
+		if ( $jsf_stack ) {
+			$query->set( '_jqbeb_jsf_stack', true );
+		}
+
+		if ( ! $jsf_stack ) {
+			// Default mode: JE has already returned the current page slice,
+			// so disable WP_Query pagination — we just want WP_Query to
+			// hydrate those exact IDs.
+			$query->set( 'posts_per_page', -1 );
+			$query->set( 'paged', 1 );
+			$query->set( 'nopaging', true );
+			$query->set( 'no_found_rows', true );
+		}
+		// In jsf_stack mode we leave pagination flags alone — the loop's
+		// preset posts_per_page (overridable by JSF) drives pagination
+		// over the full filtered post__in subset, and found_posts is
+		// computed correctly so [jsf_etch_count] works.
 	}
 
-	private function apply_ids_to_users( \WP_User_Query $query, $je_query ): void {
-		$ids = $this->extract_ids_from_get_items( $je_query );
+	private function apply_ids_to_users( \WP_User_Query $query, $je_query, bool $jsf_stack ): void {
+		$ids = $this->extract_ids_from_get_items( $je_query, $jsf_stack );
 
 		if ( empty( $ids ) ) {
 			$ids = [ 0 ];
@@ -248,13 +285,19 @@ class JE_Query_Builder_Bridge {
 
 		$query->query_vars['include'] = $ids;
 		$query->query_vars['orderby'] = 'include';
-		$query->query_vars['number']  = 0;
-		$query->query_vars['paged']   = 1;
 		$query->query_vars['fields']  = 'all';
+
+		if ( ! $jsf_stack ) {
+			$query->query_vars['number'] = 0;
+			$query->query_vars['paged']  = 1;
+		}
+		// In jsf_stack mode, leave 'number' / 'paged' to the preset.
+		// WP_User_Query will paginate the include subset natively
+		// and 'count_total' (default true) gives total_users.
 	}
 
-	private function apply_ids_to_terms( \WP_Term_Query $query, $je_query ): void {
-		$ids = $this->extract_ids_from_get_items( $je_query );
+	private function apply_ids_to_terms( \WP_Term_Query $query, $je_query, bool $jsf_stack ): void {
+		$ids = $this->extract_ids_from_get_items( $je_query, $jsf_stack );
 
 		if ( empty( $ids ) ) {
 			$ids = [ 0 ];
@@ -262,25 +305,49 @@ class JE_Query_Builder_Bridge {
 
 		$query->query_vars['include']    = $ids;
 		$query->query_vars['orderby']    = 'include';
-		$query->query_vars['number']     = 0;
-		$query->query_vars['offset']     = 0;
 		$query->query_vars['hide_empty'] = false;
 		$query->query_vars['fields']     = 'all';
+
+		if ( ! $jsf_stack ) {
+			$query->query_vars['number'] = 0;
+			$query->query_vars['offset'] = 0;
+		}
 	}
 
 	/**
 	 * Pre-fetch JE query items and extract IDs.
+	 *
+	 * Default mode: respects URL pagination — JE returns the current page
+	 * only. Used when jsf_stack=false.
+	 *
+	 * jsf_stack mode: overrides JE's per-page caps (max_items_per_page /
+	 * limit_per_page / limit set to 0, _page=1) so get_items() returns
+	 * the FULL filter set. WP_Query / JSF then paginates the subset.
 	 *
 	 * Handles:
 	 * - WP_Post / WP_User    → ->ID
 	 * - WP_Term              → ->term_id
 	 * - stdClass (raw SQL)   → heuristic check for ID / id / post_id /
 	 *                          user_id / term_id columns
-	 *
-	 * Pagination is delegated to JE via set_filtered_prop('_page').
 	 */
-	private function extract_ids_from_get_items( $je_query ): array {
-		if ( method_exists( $je_query, 'set_filtered_prop' ) ) {
+	private function extract_ids_from_get_items( $je_query, bool $jsf_stack = false ): array {
+		// Ensure final_query is populated (lazy-built by setup_query()).
+		// get_query_args() triggers setup_query if final_query is null.
+		if ( method_exists( $je_query, 'get_query_args' ) ) {
+			$je_query->get_query_args();
+		}
+
+		if ( $jsf_stack ) {
+			// Force "fetch all" — clear JE's per-page caps and reset to
+			// page 1 so get_items() returns the entire filter set.
+			if ( property_exists( $je_query, 'final_query' ) && is_array( $je_query->final_query ) ) {
+				$je_query->final_query['max_items_per_page'] = 0; // Merged
+				$je_query->final_query['limit_per_page']     = 0; // SQL
+				$je_query->final_query['limit']              = 0; // SQL
+				$je_query->final_query['_page']              = 1;
+			}
+		} elseif ( method_exists( $je_query, 'set_filtered_prop' ) ) {
+			// Default: respect URL pagination — JE returns current page only.
 			foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
 				if ( ! empty( $_REQUEST[ $page_key ] ) ) {
 					$je_query->set_filtered_prop( '_page', absint( $_REQUEST[ $page_key ] ) );
@@ -306,7 +373,6 @@ class JE_Query_Builder_Bridge {
 			} elseif ( $item instanceof \WP_Term ) {
 				$ids[] = (int) $item->term_id;
 			} elseif ( is_object( $item ) ) {
-				// Heuristic for stdClass rows from SQL queries.
 				foreach ( [ 'ID', 'id', 'post_id', 'user_id', 'term_id' ] as $key ) {
 					if ( isset( $item->$key ) && (int) $item->$key > 0 ) {
 						$ids[] = (int) $item->$key;
@@ -322,24 +388,21 @@ class JE_Query_Builder_Bridge {
 	/* -------------------- SHARED LOOKUP / ARGS -------------------- */
 
 	/**
-	 * Looks up the JE query at the top of the stack and returns it ONLY if
-	 * its target type matches `$expected_type`. Returns null on mismatch
-	 * (without popping — the matching hook handler will pop). Returns null
-	 * also on missing manager / missing query — and pops in those terminal
-	 * cases to avoid stuck state.
+	 * Resolves the JE query at the top of the stack and returns it ONLY
+	 * if its target type matches `$expected_type`. Returns null on
+	 * mismatch (without popping — the matching hook handler will pop).
+	 * Returns null also on missing manager / missing query — and pops in
+	 * those terminal cases to avoid stuck state.
 	 *
-	 * Target type rules:
-	 * - regular Posts/Users/Terms queries → query_type direct match
-	 * - Merged_Query → query_type direct match (already returns base type)
-	 * - SQL_Query → inferred via wrapper hint or cast_object_to (default: posts)
+	 * @return array{0: object, 1: array{as: ?string, jsf_stack: bool}}|null
 	 */
-	private function resolve_je_query( string $expected_type ) {
+	private function resolve_je_query( string $expected_type ): ?array {
 		$state = $this->stack->current();
 		if ( ! $state ) {
 			return null;
 		}
 
-		[ $je_query_id, $as_hint ] = $this->parse_state( $state );
+		[ $je_query_id, $hints ] = $this->parse_state( $state );
 
 		if ( ! class_exists( '\Jet_Engine\Query_Builder\Manager' ) ) {
 			$this->debug( 'JetEngine Query_Builder Manager not available' );
@@ -359,27 +422,44 @@ class JE_Query_Builder_Bridge {
 		// SQL queries don't carry a posts/users/terms type natively —
 		// infer from wrapper hint OR cast_object_to.
 		if ( $query_type === 'sql' ) {
-			$sql_target = $as_hint ?: $this->infer_sql_target_type( $je_query );
+			$sql_target = $hints['as'] ?: $this->infer_sql_target_type( $je_query );
 			if ( $sql_target !== $expected_type ) {
 				return null;
 			}
-			return $je_query;
+			return [ $je_query, $hints ];
 		}
 
-		// Regular and Merged queries carry their target type directly.
-		if ( $query_type !== $expected_type ) {
+		// Regular and Merged queries carry their target type directly,
+		// but a wrapper hint can still override (e.g. force Posts query
+		// to be treated as Users — niche but supported).
+		if ( $hints['as'] && $hints['as'] !== $expected_type ) {
+			return null;
+		}
+		if ( ! $hints['as'] && $query_type !== $expected_type ) {
 			return null;
 		}
 
-		return $je_query;
+		return [ $je_query, $hints ];
 	}
 
+	/**
+	 * @return array{0: string, 1: array{as: ?string, jsf_stack: bool}}
+	 */
 	private function parse_state( string $state ): array {
-		if ( strpos( $state, '|as=' ) === false ) {
-			return [ $state, null ];
+		$parts = explode( '|', $state );
+		$id    = array_shift( $parts );
+		$hints = [
+			'as'        => null,
+			'jsf_stack' => false,
+		];
+		foreach ( $parts as $part ) {
+			if ( str_starts_with( $part, 'as=' ) ) {
+				$hints['as'] = substr( $part, 3 ) ?: null;
+			} elseif ( $part === 'stack=1' ) {
+				$hints['jsf_stack'] = true;
+			}
 		}
-		[ $id, $rest ] = explode( '|as=', $state, 2 );
-		return [ $id, $rest ?: null ];
+		return [ (string) $id, $hints ];
 	}
 
 	private function infer_sql_target_type( $je_query ): string {
@@ -387,7 +467,6 @@ class JE_Query_Builder_Bridge {
 		if ( property_exists( $je_query, 'query' ) && is_array( $je_query->query ) ) {
 			$cast = (string) ( $je_query->query['cast_object_to'] ?? '' );
 		}
-		// Normalise: strip leading backslash, case-insensitive compare.
 		$cast = ltrim( $cast, '\\' );
 		if ( strcasecmp( $cast, 'WP_User' ) === 0 ) {
 			return 'users';
