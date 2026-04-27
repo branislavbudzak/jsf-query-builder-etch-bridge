@@ -34,23 +34,15 @@ class Plugin {
 			dirname( JQBEB_BASENAME ) . '/languages'
 		);
 
-		// Admin page always loads — it shows live status of dependencies.
+		// Admin page always loads — it shows live dependency status.
 		require_once JQBEB_DIR . 'includes/class-admin-page.php';
 		$this->admin_page = new Admin_Page();
 
-		// Etch is required for either bridge to do anything useful.
-		// Probe runs at init p20 (Etch registers etch/element on init).
-		add_action( 'init', [ $this, 'maybe_load_bridges' ], 20 );
-
-		// Activation/admin notice if Etch is missing.
-		add_action( 'admin_notices', [ $this, 'maybe_show_etch_missing_notice' ] );
-	}
-
-	public function maybe_load_bridges(): void {
-		if ( ! $this->is_etch_active() ) {
-			return;
-		}
-
+		// JSF bridge MUST instantiate at plugins_loaded so it can register
+		// its 'jet-smart-filters/providers/register' listener before that
+		// action fires at init priority -998.
+		// At plugins_loaded all plugin main files have been included, so
+		// JSF/JE class definitions are available regardless of load order.
 		if ( $this->is_jsf_active() ) {
 			require_once JQBEB_DIR . 'includes/class-jsf-bridge.php';
 			$this->jsf_bridge = new JSF_Bridge();
@@ -63,9 +55,14 @@ class Plugin {
 			require_once JQBEB_DIR . 'includes/class-je-query-builder-bridge.php';
 			$this->je_bridge = new JE_Query_Builder_Bridge();
 		}
+
+		add_action( 'admin_notices', [ $this, 'maybe_show_etch_missing_notice' ] );
 	}
 
 	public function is_etch_active(): bool {
+		// Etch registers etch/element on init p10, so before init this can
+		// return false. The admin page is rendered after init, so this is
+		// reliable in admin context.
 		return \WP_Block_Type_Registry::get_instance()->is_registered( 'etch/element' );
 	}
 
@@ -84,8 +81,6 @@ class Plugin {
 		if ( $this->is_etch_active() ) {
 			return;
 		}
-		// Suppress on plugins screen if Etch isn't even installed —
-		// admin already sees it as inactive in plugin list.
 		printf(
 			'<div class="notice notice-warning"><p><strong>%s</strong> %s</p></div>',
 			esc_html__( 'JSF Query Builder Etch Bridge:', 'jsf-query-builder-etch-bridge' ),
