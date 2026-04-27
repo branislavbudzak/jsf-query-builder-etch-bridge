@@ -11,36 +11,34 @@
  *   JE 'posts'        → Etch wp-query / main-query  (pre_get_posts)
  *   JE 'users'        → Etch wp-users               (pre_user_query)
  *   JE 'terms'        → Etch wp-terms               (pre_get_terms)
- *   JE Merged_Query   → same hook as the merge's base_query_type, BUT the
- *                       integration is different (see Merged section below)
+ *   JE Merged_Query   → same hook as the merge's base_query_type
+ *   JE 'sql'          → routed by cast_object_to or je-as-{type} hint
+ *                       (pre-fetched, IDs fed via post__in / include)
  *
- * Merged_Query handling
+ * Merged + SQL handling
  * ---------------------
- * Merged_Query is same-type only — its `query_type` reports its base type
- * ('posts' / 'users' / 'terms'). It exposes no single WP_*_Query for us to
- * intercept; instead, sub-queries each run their own underlying query and
- * results are concatenated. Calling `get_query_args()` on a Merged_Query
- * returns a meaningless array_merge of all sub-queries' args (used by JE
- * only as a cache hash) — passing it to a WP_Query would corrupt the loop.
+ * Both Merged_Query and SQL_Query bypass our hook-based wholesale-replace
+ * approach because they don't expose a single WP_*_Query for us to mutate.
+ * Strategy: pre-fetch via `$je_query->get_items()`, extract IDs, and feed
+ * them to the firing Etch-instantiated query as `post__in` / `include`.
  *
- * Strategy: pre-fetch the merged result via `$merged->get_items()`, extract
- * IDs, and feed them to the firing query as `post__in` / `include`. The
- * underlying WP_*_Query then only resolves those IDs in their original
- * order, and built-in pagination is disabled (JE has already paginated
- * internally via `_page` + `max_items_per_page`).
+ * For SQL, the target type (posts / users / terms) is inferred from:
+ *   1. wrapper class hint `je-as-posts` / `je-as-users` / `je-as-terms`
+ *   2. JE SQL query's `cast_object_to` setting (WP_Post / WP_User / WP_Term)
+ *   3. default: `posts`
  *
  * If JSF is also active and the wrapper carries `jsf-etch-loop` classes,
  * priority order on `pre_get_posts` is:
  *
- *   p4  pre_render_block  → JE captures wrapper
- *   p4  pre_render_block  → JSF captures wrapper
+ *   p4  pre_render_block  → JE captures je-etch-loop wrapper
+ *   p4  pre_render_block  → JSF captures jsf-etch-loop wrapper
  *   p40 pre_get_posts     → JE replaces args
  *   p50 pre_get_posts     → JSF tags query for filter merge
  *   p60 pre_get_posts     → JSF merges filter args on top of JE base
  *
- * Note: JSF + Merged_Query is not a supported combination — JSF expects a
- * standard SQL-backed WP_Query and merges meta_query/tax_query into it,
- * but Merged bypasses the SQL by predefining `post__in`.
+ * Note: JSF + Merged/SQL is not supported — JSF expects a SQL-backed
+ * WP_Query and merges meta_query/tax_query into it, but Merged/SQL
+ * predefine the result set via post__in.
  *
  * @package JQBEB
  */
@@ -77,6 +75,13 @@ class JE_Query_Builder_Bridge {
 		return null;
 	}
 
+	public static function extract_as_hint( string $classes ): ?string {
+		if ( preg_match( '/\bje-as-(posts|users|terms)\b/i', $classes, $m ) ) {
+			return strtolower( $m[1] );
+		}
+		return null;
+	}
+
 	public function on_pre_render_block( $pre, $block ) {
 		if ( wp_doing_ajax() || is_admin() ) {
 			return $pre;
@@ -92,7 +97,11 @@ class JE_Query_Builder_Bridge {
 		if ( ! $query_id ) {
 			return $pre;
 		}
-		$this->stack->push( $query_id );
+		// Encode optional `je-as-{type}` hint into the stack value so the
+		// dispatcher can use it during SQL target type inference.
+		$as_hint = self::extract_as_hint( $classes );
+		$state   = $as_hint ? $query_id . '|as=' . $as_hint : $query_id;
+		$this->stack->push( $state );
 		return $pre;
 	}
 
@@ -119,7 +128,9 @@ class JE_Query_Builder_Bridge {
 		}
 
 		if ( $this->is_merged( $je_query ) ) {
-			$this->apply_merged_to_posts( $query, $je_query );
+			$this->apply_ids_to_posts( $query, $je_query, 'merged' );
+		} elseif ( $this->is_sql( $je_query ) ) {
+			$this->apply_ids_to_posts( $query, $je_query, 'sql' );
 		} else {
 			$this->apply_regular_to_posts( $query, $je_query );
 		}
@@ -138,7 +149,9 @@ class JE_Query_Builder_Bridge {
 		}
 
 		if ( $this->is_merged( $je_query ) ) {
-			$this->apply_merged_to_users( $query, $je_query );
+			$this->apply_ids_to_users( $query, $je_query );
+		} elseif ( $this->is_sql( $je_query ) ) {
+			$this->apply_ids_to_users( $query, $je_query );
 		} else {
 			$this->apply_regular_to_users( $query, $je_query );
 		}
@@ -157,7 +170,9 @@ class JE_Query_Builder_Bridge {
 		}
 
 		if ( $this->is_merged( $je_query ) ) {
-			$this->apply_merged_to_terms( $query, $je_query );
+			$this->apply_ids_to_terms( $query, $je_query );
+		} elseif ( $this->is_sql( $je_query ) ) {
+			$this->apply_ids_to_terms( $query, $je_query );
 		} else {
 			$this->apply_regular_to_terms( $query, $je_query );
 		}
@@ -200,18 +215,17 @@ class JE_Query_Builder_Bridge {
 		$query->query_vars['fields'] = 'all';
 	}
 
-	/* -------------------- MERGED QUERY APPLICATION -------------------- */
+	/* -------------------- ID-FED QUERY APPLICATION (Merged + SQL) -------------------- */
 
-	private function apply_merged_to_posts( \WP_Query $query, $je_query ): void {
-		$ids = $this->extract_merged_ids( $je_query );
+	private function apply_ids_to_posts( \WP_Query $query, $je_query, string $marker ): void {
+		$ids = $this->extract_ids_from_get_items( $je_query );
 
-		// Empty merged set: post 0 never matches → empty loop.
+		// Empty result → post 0 never matches → empty loop. Better than
+		// leaving the query unmodified (which would render Etch's preset).
 		if ( empty( $ids ) ) {
 			$ids = [ 0 ];
 		}
 
-		// Reset everything that would otherwise re-paginate or override
-		// our pre-fetched ID list.
 		$query->set( 'post__in', $ids );
 		$query->set( 'orderby', 'post__in' );
 		$query->set( 'posts_per_page', -1 );
@@ -219,15 +233,14 @@ class JE_Query_Builder_Bridge {
 		$query->set( 'nopaging', true );
 		$query->set( 'no_found_rows', true );
 		$query->set( 'ignore_sticky_posts', true );
-		// Allow any post type — JE merged set may span types.
 		$query->set( 'post_type', 'any' );
 		$query->set( 'post_status', 'any' );
 		$query->set( '_jqbeb_je_query_id', $je_query->id ?? '' );
-		$query->set( '_jqbeb_je_merged', true );
+		$query->set( '_jqbeb_je_' . $marker, true );
 	}
 
-	private function apply_merged_to_users( \WP_User_Query $query, $je_query ): void {
-		$ids = $this->extract_merged_ids( $je_query );
+	private function apply_ids_to_users( \WP_User_Query $query, $je_query ): void {
+		$ids = $this->extract_ids_from_get_items( $je_query );
 
 		if ( empty( $ids ) ) {
 			$ids = [ 0 ];
@@ -235,13 +248,13 @@ class JE_Query_Builder_Bridge {
 
 		$query->query_vars['include'] = $ids;
 		$query->query_vars['orderby'] = 'include';
-		$query->query_vars['number']  = 0; // 0 = no limit, return all included.
+		$query->query_vars['number']  = 0;
 		$query->query_vars['paged']   = 1;
 		$query->query_vars['fields']  = 'all';
 	}
 
-	private function apply_merged_to_terms( \WP_Term_Query $query, $je_query ): void {
-		$ids = $this->extract_merged_ids( $je_query );
+	private function apply_ids_to_terms( \WP_Term_Query $query, $je_query ): void {
+		$ids = $this->extract_ids_from_get_items( $je_query );
 
 		if ( empty( $ids ) ) {
 			$ids = [ 0 ];
@@ -256,14 +269,17 @@ class JE_Query_Builder_Bridge {
 	}
 
 	/**
-	 * Pre-fetch merged items and extract their IDs.
+	 * Pre-fetch JE query items and extract IDs.
 	 *
-	 * - WP_Post / WP_User → ->ID
-	 * - WP_Term → ->term_id
+	 * Handles:
+	 * - WP_Post / WP_User    → ->ID
+	 * - WP_Term              → ->term_id
+	 * - stdClass (raw SQL)   → heuristic check for ID / id / post_id /
+	 *                          user_id / term_id columns
 	 *
-	 * Pagination is delegated to the merged query via set_filtered_prop('_page').
+	 * Pagination is delegated to JE via set_filtered_prop('_page').
 	 */
-	private function extract_merged_ids( $je_query ): array {
+	private function extract_ids_from_get_items( $je_query ): array {
 		if ( method_exists( $je_query, 'set_filtered_prop' ) ) {
 			foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
 				if ( ! empty( $_REQUEST[ $page_key ] ) ) {
@@ -274,7 +290,7 @@ class JE_Query_Builder_Bridge {
 		}
 
 		if ( ! method_exists( $je_query, 'get_items' ) ) {
-			$this->debug( 'Merged_Query missing get_items()' );
+			$this->debug( 'JE query missing get_items()' );
 			return [];
 		}
 
@@ -289,10 +305,14 @@ class JE_Query_Builder_Bridge {
 				$ids[] = (int) $item->ID;
 			} elseif ( $item instanceof \WP_Term ) {
 				$ids[] = (int) $item->term_id;
-			} elseif ( is_object( $item ) && isset( $item->ID ) ) {
-				$ids[] = (int) $item->ID;
-			} elseif ( is_object( $item ) && isset( $item->term_id ) ) {
-				$ids[] = (int) $item->term_id;
+			} elseif ( is_object( $item ) ) {
+				// Heuristic for stdClass rows from SQL queries.
+				foreach ( [ 'ID', 'id', 'post_id', 'user_id', 'term_id' ] as $key ) {
+					if ( isset( $item->$key ) && (int) $item->$key > 0 ) {
+						$ids[] = (int) $item->$key;
+						break;
+					}
+				}
 			}
 		}
 
@@ -303,16 +323,23 @@ class JE_Query_Builder_Bridge {
 
 	/**
 	 * Looks up the JE query at the top of the stack and returns it ONLY if
-	 * its `query_type` matches the expected type. Returns null on mismatch
+	 * its target type matches `$expected_type`. Returns null on mismatch
 	 * (without popping — the matching hook handler will pop). Returns null
 	 * also on missing manager / missing query — and pops in those terminal
 	 * cases to avoid stuck state.
+	 *
+	 * Target type rules:
+	 * - regular Posts/Users/Terms queries → query_type direct match
+	 * - Merged_Query → query_type direct match (already returns base type)
+	 * - SQL_Query → inferred via wrapper hint or cast_object_to (default: posts)
 	 */
 	private function resolve_je_query( string $expected_type ) {
-		$je_query_id = $this->stack->current();
-		if ( ! $je_query_id ) {
+		$state = $this->stack->current();
+		if ( ! $state ) {
 			return null;
 		}
+
+		[ $je_query_id, $as_hint ] = $this->parse_state( $state );
 
 		if ( ! class_exists( '\Jet_Engine\Query_Builder\Manager' ) ) {
 			$this->debug( 'JetEngine Query_Builder Manager not available' );
@@ -329,8 +356,17 @@ class JE_Query_Builder_Bridge {
 
 		$query_type = property_exists( $je_query, 'query_type' ) ? $je_query->query_type : '';
 
-		// Mismatch — silently skip without popping. The matching hook will
-		// fire later (or won't, if the Etch preset type doesn't align).
+		// SQL queries don't carry a posts/users/terms type natively —
+		// infer from wrapper hint OR cast_object_to.
+		if ( $query_type === 'sql' ) {
+			$sql_target = $as_hint ?: $this->infer_sql_target_type( $je_query );
+			if ( $sql_target !== $expected_type ) {
+				return null;
+			}
+			return $je_query;
+		}
+
+		// Regular and Merged queries carry their target type directly.
 		if ( $query_type !== $expected_type ) {
 			return null;
 		}
@@ -338,8 +374,38 @@ class JE_Query_Builder_Bridge {
 		return $je_query;
 	}
 
+	private function parse_state( string $state ): array {
+		if ( strpos( $state, '|as=' ) === false ) {
+			return [ $state, null ];
+		}
+		[ $id, $rest ] = explode( '|as=', $state, 2 );
+		return [ $id, $rest ?: null ];
+	}
+
+	private function infer_sql_target_type( $je_query ): string {
+		$cast = '';
+		if ( property_exists( $je_query, 'query' ) && is_array( $je_query->query ) ) {
+			$cast = (string) ( $je_query->query['cast_object_to'] ?? '' );
+		}
+		// Normalise: strip leading backslash, case-insensitive compare.
+		$cast = ltrim( $cast, '\\' );
+		if ( strcasecmp( $cast, 'WP_User' ) === 0 ) {
+			return 'users';
+		}
+		if ( strcasecmp( $cast, 'WP_Term' ) === 0 ) {
+			return 'terms';
+		}
+		// Default: posts (covers WP_Post, no cast, and any custom class
+		// whose IDs the user wants to feed into a posts loop).
+		return 'posts';
+	}
+
 	private function is_merged( $je_query ): bool {
 		return $je_query instanceof \Jet_Engine\Query_Builder\Queries\Merged_Query;
+	}
+
+	private function is_sql( $je_query ): bool {
+		return $je_query instanceof \Jet_Engine\Query_Builder\Queries\SQL_Query;
 	}
 
 	/**

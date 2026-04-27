@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       JSF Query Builder Etch Bridge
  * Plugin URI:        https://github.com/branobudzak/jsf-query-builder-etch-bridge
- * Description:       Drive Etch native Query Loops with JetSmartFilters and/or JetEngine Query Builder (Posts / Users / Terms / Merged Query). Each bridge works independently — install only what you need.
- * Version:           0.3.0
+ * Description:       Drive Etch native Query Loops with JetSmartFilters and/or JetEngine Query Builder (Posts / Users / Terms / Merged Query / SQL). Each bridge works independently — install only what you need.
+ * Version:           0.4.0
  * Requires at least: 6.4
  * Requires PHP:      8.0
  * Author:            Branislav Budzák
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'JQBEB_VERSION', '0.3.0' );
+define( 'JQBEB_VERSION', '0.4.0' );
 define( 'JQBEB_FILE', __FILE__ );
 define( 'JQBEB_DIR', plugin_dir_path( __FILE__ ) );
 define( 'JQBEB_URL', plugin_dir_url( __FILE__ ) );
