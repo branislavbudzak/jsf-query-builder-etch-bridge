@@ -485,8 +485,15 @@ class JE_Query_Builder_Bridge {
 		}
 
 		if ( ! empty( $partials['custom_query'] ) || $unset_orders ) {
+			// Match JE: CMT table goes through DB::table(), which prepends
+			// $wpdb->prefix + static::$prefix. Manager::get_table_name() on
+			// its own returns the UNPREFIXED slug-derived name and would
+			// yield SQL referencing a table that does not physically exist.
+			$db          = $manager->get_db_instance( $matching['object_slug'], $matching['fields'] ?? [] );
+			$cmt_table   = $db->table();
+
 			$query->set( 'custom_table_query', [
-				'table' => $manager->get_table_name( $matching['object_slug'] ),
+				'table' => $cmt_table,
 				'query' => $partials['custom_query'] ?: [],
 				'order' => $order_list,
 			] );

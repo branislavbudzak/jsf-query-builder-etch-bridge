@@ -384,8 +384,11 @@ class JSF_Bridge {
 				continue;
 			}
 			if ( in_array( $storage['object_slug'] ?? '', $post_types, true ) ) {
+				// Use DB::table() so we get the $wpdb->prefix-prefixed name,
+				// matching how JE writes the table in custom_table_query.
+				$db = $manager->get_db_instance( $storage['object_slug'], $storage['fields'] ?? [] );
 				return [
-					$manager->get_table_name( $storage['object_slug'] ),
+					$db->table(),
 					$storage['fields'] ?? [],
 				];
 			}
