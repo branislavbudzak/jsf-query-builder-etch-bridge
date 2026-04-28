@@ -263,6 +263,11 @@ class JSF_Bridge {
 		$ids_in       = implode( ',', array_map( 'absint', $matching_ids ) );
 		$indexed_data = [];
 
+		// Detect CMT context once: if the loop's post_type uses JE Custom
+		// Meta Tables, meta_query indexed counts must read from the custom
+		// table (column-per-field, object_ID FK), not wp_postmeta.
+		[ $cmt_table, $cmt_fields ] = $this->detect_cmt_for_args( $query_args );
+
 		foreach ( $indexing_data as $query_type => $type_data ) {
 
 			$indexed_data[ $query_type ] = [];
@@ -300,26 +305,102 @@ class JSF_Bridge {
 						? array_map( 'trim', explode( ',', $meta_key ) )
 						: [ $meta_key ];
 
-					$placeholders = implode( ',', array_fill( 0, count( $keys ), '%s' ) );
+					$cmt_keys = $cmt_table
+						? array_values( array_intersect( $keys, $cmt_fields ) )
+						: [];
+					$pm_keys  = array_values( array_diff( $keys, $cmt_keys ) );
 
-					$sql = $wpdb->prepare(
-						"SELECT meta_value, COUNT(DISTINCT post_id) AS cnt
-						 FROM {$wpdb->postmeta}
-						 WHERE post_id IN ($ids_in)
-						   AND meta_key IN ($placeholders)
-						 GROUP BY meta_value",
-						...$keys
-					);
+					$bucket = [];
 
-					$rows = $wpdb->get_results( $sql );
-					foreach ( $rows as $row ) {
-						$indexed_data['meta_query'][ $meta_key ][ (string) $row->meta_value ] = (int) $row->cnt;
+					if ( ! empty( $cmt_keys ) ) {
+						// CMT table is wide: one column per registered field,
+						// object_ID FK to wp_posts.ID. Aggregate per column,
+						// then merge into a single value→count bucket so
+						// multi-key filters still display unified counts.
+						foreach ( $cmt_keys as $field ) {
+							$col = $this->sanitize_cmt_column( $field );
+							if ( ! $col ) {
+								continue;
+							}
+							$rows = $wpdb->get_results(
+								"SELECT `{$col}` AS meta_value, COUNT(DISTINCT object_ID) AS cnt
+								 FROM `{$cmt_table}`
+								 WHERE object_ID IN ($ids_in)
+								   AND `{$col}` IS NOT NULL
+								   AND `{$col}` <> ''
+								 GROUP BY `{$col}`"
+							);
+							foreach ( $rows as $row ) {
+								$val = (string) $row->meta_value;
+								$existing = $bucket[ $val ] ?? 0;
+								$bucket[ $val ] = $existing + (int) $row->cnt;
+							}
+						}
 					}
+
+					if ( ! empty( $pm_keys ) ) {
+						$placeholders = implode( ',', array_fill( 0, count( $pm_keys ), '%s' ) );
+						$sql          = $wpdb->prepare(
+							"SELECT meta_value, COUNT(DISTINCT post_id) AS cnt
+							 FROM {$wpdb->postmeta}
+							 WHERE post_id IN ($ids_in)
+							   AND meta_key IN ($placeholders)
+							 GROUP BY meta_value",
+							...$pm_keys
+						);
+						$rows         = $wpdb->get_results( $sql );
+						foreach ( $rows as $row ) {
+							$val            = (string) $row->meta_value;
+							$existing       = $bucket[ $val ] ?? 0;
+							$bucket[ $val ] = $existing + (int) $row->cnt;
+						}
+					}
+
+					$indexed_data['meta_query'][ $meta_key ] = $bucket;
 				}
 			}
 		}
 
 		return $indexed_data;
+	}
+
+	/**
+	 * If the query post_type uses JE Custom Meta Tables, return [table, fields].
+	 * Otherwise [null, []].
+	 *
+	 * @return array{0: ?string, 1: array<int,string>}
+	 */
+	private function detect_cmt_for_args( array $query_args ): array {
+		if ( ! class_exists( '\Jet_Engine\CPT\Custom_Tables\Manager' ) ) {
+			return [ null, [] ];
+		}
+		$manager = \Jet_Engine\CPT\Custom_Tables\Manager::instance();
+		if ( empty( $manager->storages ) ) {
+			return [ null, [] ];
+		}
+		$post_types = (array) ( $query_args['post_type'] ?? [] );
+		foreach ( $manager->storages as $storage ) {
+			if ( ( $storage['object_type'] ?? '' ) !== 'post' ) {
+				continue;
+			}
+			if ( in_array( $storage['object_slug'] ?? '', $post_types, true ) ) {
+				return [
+					$manager->get_table_name( $storage['object_slug'] ),
+					$storage['fields'] ?? [],
+				];
+			}
+		}
+		return [ null, [] ];
+	}
+
+	/**
+	 * Allow only [a-zA-Z0-9_] in CMT column names — they're interpolated
+	 * directly into SQL because $wpdb->prepare cannot bind identifiers.
+	 * Membership in the registered CMT fields list is the trust source;
+	 * this is a defence-in-depth strip.
+	 */
+	private function sanitize_cmt_column( string $col ): string {
+		return preg_replace( '/[^A-Za-z0-9_]/', '', $col ) ?: '';
 	}
 
 	/* -------------------- PROVIDER REGISTRATION -------------------- */

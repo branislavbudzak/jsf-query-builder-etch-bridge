@@ -239,6 +239,9 @@ class JE_Query_Builder_Bridge {
 			$query->set( $key, $value );
 		}
 		$query->set( '_jqbeb_je_query_id', $je_query->id ?? '' );
+
+		// CMT redirect: see apply_cmt_redirect() docblock.
+		$this->apply_cmt_redirect( $query );
 	}
 
 	private function apply_regular_to_users( \WP_User_Query $query, $je_query ): void {
@@ -336,6 +339,217 @@ class JE_Query_Builder_Bridge {
 			$query->query_vars['number'] = 0;
 			$query->query_vars['offset'] = 0;
 		}
+	}
+
+	/* -------------------- CMT (Custom Meta Tables) REDIRECT -------------------- */
+
+	/**
+	 * Detect CMT-stored fields in the applied JE args and replicate JE's
+	 * pre_get_posts splitter inline.
+	 *
+	 * Why this is needed
+	 * ------------------
+	 * JetEngine's `Custom_Tables\Manager` registers a GLOBAL `posts_clauses`
+	 * filter (priority 10) that emits a CMT JOIN/WHERE/ORDER if a query
+	 * carries a `custom_table_query` query var. JE's own `pre_get_posts`
+	 * handler (priority 10, one closure per CMT post type — see
+	 * `jet-engine/.../post-types/custom-tables/query.php:354`) populates
+	 * that var by splitting `meta_query` into postmeta-stored vs CMT-stored
+	 * clauses.
+	 *
+	 * Our bridge sets the JE args at `pre_get_posts` priority 40 — strictly
+	 * AFTER JE's splitter. So when the splitter ran, the query still carried
+	 * Etch's preset args (no CMT meta_query). It found nothing to split, and
+	 * `custom_table_query` stayed unset. The global `posts_clauses` filter
+	 * therefore did not emit the CMT JOIN, and the resulting SQL queried
+	 * `wp_postmeta` for fields that are NOT there — returning 0 results
+	 * even though JE's own `get_items()` returned full data.
+	 *
+	 * What this method does
+	 * ---------------------
+	 * Mirrors `Jet_Engine\CPT\Custom_Tables\Query::pre_get_posts` (the
+	 * closure body) and `exctract_meta_query_partials()`:
+	 *
+	 *   1. Looks up the CMT storage matching the applied `post_type` from
+	 *      `Manager::$storages`. Bails if none.
+	 *   2. Splits `meta_query` into `custom_query` (CMT clauses) + plain
+	 *      `meta_query` (postmeta clauses).
+	 *   3. Rewrites `orderby` so any `meta_value` / `meta_value_num` keys
+	 *      pointing at CMT fields become a `RAND($t)` placeholder; the
+	 *      global `posts_clauses` filter str_replaces the placeholder back
+	 *      with `{cmt_table}.{column}` at SQL build time.
+	 *   4. Sets `custom_table_query` query var; the global filter takes it
+	 *      from there.
+	 *
+	 * Tightly coupled to JE internals — if JE changes its split logic /
+	 * orderby trick, we need to re-sync. Public API surface we depend on:
+	 *   - `\Jet_Engine\CPT\Custom_Tables\Manager::instance()`
+	 *   - `Manager::$storages` (public array)
+	 *   - `Manager::get_table_name( $object_slug )`
+	 *   - `custom_table_query` query var contract (table / query / order)
+	 */
+	private function apply_cmt_redirect( \WP_Query $query ): void {
+		if ( ! class_exists( '\Jet_Engine\CPT\Custom_Tables\Manager' ) ) {
+			return;
+		}
+		$manager = \Jet_Engine\CPT\Custom_Tables\Manager::instance();
+		if ( empty( $manager->storages ) ) {
+			return;
+		}
+
+		$post_types = (array) $query->get( 'post_type' );
+		$matching   = null;
+		foreach ( $manager->storages as $storage ) {
+			if ( ( $storage['object_type'] ?? '' ) !== 'post' ) {
+				continue;
+			}
+			if ( in_array( $storage['object_slug'] ?? '', $post_types, true ) ) {
+				$matching = $storage;
+				break;
+			}
+		}
+		if ( ! $matching ) {
+			return;
+		}
+
+		$cmt_fields = $matching['fields'] ?? [];
+		if ( empty( $cmt_fields ) ) {
+			return;
+		}
+
+		$meta_query = $query->get( 'meta_query' );
+		$partials   = $this->split_meta_query_for_cmt(
+			is_array( $meta_query ) ? $meta_query : [],
+			$cmt_fields
+		);
+
+		$orderby_in  = $query->get( 'orderby' );
+		$order_in    = $query->get( 'order' );
+		$meta_key_in = $query->get( 'meta_key' );
+
+		$order_list   = [];
+		$unset_orders = false;
+		$new_orderby  = null;
+
+		if ( $orderby_in ) {
+			$orderby_norm = is_array( $orderby_in )
+				? $orderby_in
+				: [ $orderby_in => $order_in ];
+
+			foreach ( $orderby_norm as $key => $dir ) {
+				$custom_key = false;
+
+				if ( in_array( $key, [ 'meta_value_num', 'meta_value' ], true )
+					&& in_array( $meta_key_in, $cmt_fields, true )
+				) {
+					$suffix     = ( 'meta_value_num' === $key ) ? '+0' : '';
+					$custom_key = $meta_key_in . $suffix;
+					$unset_orders = true;
+					$query->set( 'meta_key', null );
+				}
+
+				if ( ! empty( $partials['custom_query'] )
+					&& isset( $partials['custom_query'][ $key ] )
+				) {
+					$clause          = $partials['custom_query'][ $key ];
+					$custom_meta_key = $clause['key'] ?? '';
+					$type            = $clause['type'] ?? '';
+					$numeric         = [ 'TIMESTAMP', 'NUMERIC', 'DECIMAL', 'SIGNED' ];
+					$suffix          = in_array( $type, $numeric, true ) ? '+0' : '';
+					$custom_key      = $custom_meta_key . $suffix;
+					$unset_orders    = true;
+				}
+
+				$order_list[] = [
+					'custom_key'  => $custom_key,
+					'order'       => $dir ?: 'DESC',
+					'replacement' => false,
+				];
+			}
+
+			if ( $unset_orders ) {
+				$orderby_keys = array_keys( $orderby_norm );
+				$rewritten    = [];
+				$t            = time() * 10;
+
+				foreach ( $orderby_keys as $i => $orig_key ) {
+					$is_custom = ! empty( $order_list[ $i ]['custom_key'] );
+					$key       = $is_custom ? "RAND(" . ( $t + $i ) . ")" : $orig_key;
+					if ( $is_custom ) {
+						$order_list[ $i ]['replacement'] = $key;
+					}
+					$rewritten[ $key ] = $order_list[ $i ]['order'];
+				}
+				$new_orderby = $rewritten;
+			}
+		}
+
+		if ( ! empty( $partials['custom_query'] ) || $unset_orders ) {
+			$query->set( 'custom_table_query', [
+				'table' => $manager->get_table_name( $matching['object_slug'] ),
+				'query' => $partials['custom_query'] ?: [],
+				'order' => $order_list,
+			] );
+			$query->set( 'meta_query', $partials['meta_query'] ?: [] );
+			if ( null !== $new_orderby ) {
+				$query->set( 'orderby', $new_orderby );
+			}
+			$query->set( '_jqbeb_je_cmt', $matching['object_slug'] );
+		}
+	}
+
+	/**
+	 * Recursively split a meta_query into CMT-stored vs postmeta-stored
+	 * clauses. Mirror of `Query::exctract_meta_query_partials()` in JE
+	 * (`post-types/custom-tables/query.php:470`).
+	 *
+	 * @return array{custom_query: array|false, meta_query: array|false}
+	 */
+	private function split_meta_query_for_cmt( array $meta_query, array $cmt_fields ): array {
+		$result           = [ 'custom_query' => false, 'meta_query' => false ];
+		$custom_query     = [];
+		$plain_meta_query = [];
+		$relation         = false;
+
+		foreach ( $meta_query as $key => $clause ) {
+			if ( 'relation' === $key ) {
+				$relation = $clause;
+				continue;
+			}
+			if ( ! is_array( $clause ) ) {
+				continue;
+			}
+
+			if ( isset( $clause['key'] ) ) {
+				if ( in_array( $clause['key'], $cmt_fields, true ) ) {
+					$custom_query[ $key ] = $clause;
+				} else {
+					$plain_meta_query[ $key ] = $clause;
+				}
+			} else {
+				$sub = $this->split_meta_query_for_cmt( $clause, $cmt_fields );
+				if ( ! empty( $sub['meta_query'] ) ) {
+					$plain_meta_query[ $key ] = $sub['meta_query'];
+				}
+				if ( ! empty( $sub['custom_query'] ) ) {
+					$custom_query[ $key ] = $sub['custom_query'];
+				}
+			}
+		}
+
+		if ( ! empty( $custom_query ) ) {
+			if ( $relation ) {
+				$custom_query['relation'] = $relation;
+			}
+			$result['custom_query'] = $custom_query;
+		}
+		if ( ! empty( $plain_meta_query ) ) {
+			if ( $relation ) {
+				$plain_meta_query['relation'] = $relation;
+			}
+			$result['meta_query'] = $plain_meta_query;
+		}
+		return $result;
 	}
 
 	/**

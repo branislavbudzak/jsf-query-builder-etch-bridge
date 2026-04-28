@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 0.6.1
+Stable tag: 0.7.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,12 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 0.7.0 =
+* JE Query Builder bridge: support for JetEngine **Custom Meta Tables** (post types with Custom Storage enabled).
+* Bridge now replicates JE's `pre_get_posts` splitter inline (`apply_cmt_redirect()`): when the JE query's post type uses CMT, the bridge splits the applied `meta_query` into custom-table clauses vs `wp_postmeta` clauses, rewrites `orderby` for CMT-stored sort keys, and sets the `custom_table_query` query var. JE's global `posts_clauses` filter (registered by `Custom_Tables\Manager`) then emits the CMT JOIN/WHERE/ORDER. This fixes the long-standing bug where Posts queries with CMT meta_query returned 0 rows because our `pre_get_posts` priority 40 ran AFTER JE's CMT splitter at priority 10.
+* JSF Filter Indexer: `[jsf_etch_count]` and per-option counts on filter dropdowns now read from the CMT table when the loop's post type uses Custom Storage. Multi-key filters (comma-separated meta keys) automatically split between CMT columns and `wp_postmeta` and merge counts into a unified bucket.
+* CCT (Custom Content Types — separate `wp_jet_cct_*` tables): no change needed — JE already exposes CCT queries as SQL_Query type, which the bridge handles via the existing pre-fetch + `post__in` path.
 
 = 0.6.1 =
 * Fix: JE Query Builder bridge was never instantiated. JetEngine registers `\Jet_Engine\Query_Builder\Manager` on `init` priority `-1` (via its components-manager), but the bridge bootstrap checked `class_exists()` at `plugins_loaded` p10 — too early. The check returned `false`, the bridge constructor never ran, no hooks were attached, and Etch loops kept rendering their built-in query unchanged. The bridge is now booted on `init` p0 (after JetEngine has registered Query_Builder, before any block render).

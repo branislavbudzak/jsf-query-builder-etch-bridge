@@ -77,6 +77,10 @@ These were the foot-guns discovered during initial development. All have to rema
 
 8. **Data Store cache reset for `je-jsf-stack` mode.** `Data_Stores_Query` caches its inner query in `$current_query`. If we set `final_query` overrides AFTER `get_current_query()` has already materialised, the overrides have no effect. The bridge calls `$je_query->reset_query()` after applying overrides so the next `get_items()` rebuilds with our values.
 
+9. **CMT (Custom Meta Tables) timing trap.** JetEngine's `\Jet_Engine\CPT\Custom_Tables\Manager` registers a GLOBAL `posts_clauses` filter at priority 10 that emits a custom-table JOIN/WHERE/ORDER iff the WP_Query carries a `custom_table_query` query var. JE populates that var via its OWN `pre_get_posts` handler at priority 10 (one closure per CMT post type, in `Query::hook_query_handlers()` → `jet-engine/.../post-types/custom-tables/query.php:354`), which calls `exctract_meta_query_partials()` to split `meta_query` into custom-table vs `wp_postmeta` clauses. Our bridge applies JE args at priority 40 — strictly AFTER JE's splitter. The splitter therefore sees Etch's preset (no CMT meta_query), does nothing, and `custom_table_query` stays unset; the global `posts_clauses` filter then emits no CMT SQL and the resulting query searches `wp_postmeta` for fields that are not there. Result: 0 rows even though JE's own `get_items()` returns full data. The bridge's `apply_cmt_redirect()` mirrors JE's split logic inline AFTER our wholesale arg replacement, so `custom_table_query` is set and the global filter takes over from there. Tightly coupled to JE internals — public API surface we depend on is `Manager::instance()`, `Manager::$storages`, `Manager::get_table_name()`, and the `custom_table_query` query var contract (`{table, query, order}`).
+
+10. **CMT for JSF Indexer.** The bridge's `compute_indexed_counts` (in `JSF_Bridge`) generates per-option counts by querying `wp_postmeta` directly. For loops whose post type uses Custom Storage, the meta values live in the CMT table (column-per-field, `object_ID` FK), not `wp_postmeta`. The indexer detects CMT context via `JSF_Bridge::detect_cmt_for_args()` and routes meta_query keys accordingly: keys whose name appears in `Manager::$storages[*]['fields']` are queried as `SELECT \`{col}\` AS meta_value, COUNT(DISTINCT object_ID) FROM \`{cmt_table}\` ...`; keys outside the CMT field list still go to `wp_postmeta`. Multi-key filters (comma-separated keys representing OR'd meta_keys) split between the two paths and counts are merged into a single value→count bucket per filter. Column names are interpolated directly into SQL because `$wpdb->prepare()` cannot bind identifiers; trust source is membership in the registered fields list, sanitised again via `sanitize_cmt_column()` (defence-in-depth strip to `[A-Za-z0-9_]`).
+
 ## Wrapper class conventions
 
 | Class | Required for |
@@ -99,7 +103,7 @@ includes/
   class-state-stack.php                 push/pop helper used by both bridges
   class-jsf-bridge.php                  JSF integration (Snippet 1)
   class-jsf-provider.php                Jet_Smart_Filters_Provider_Base subclass + AJAX loopback
-  class-je-query-builder-bridge.php     JE integration with type dispatch (Posts / Users / Terms / Merged)
+  class-je-query-builder-bridge.php     JE integration: type dispatch (Posts / Users / Terms / Merged / SQL / Data Stores) + CMT redirect helpers (apply_cmt_redirect / split_meta_query_for_cmt)
   class-shortcode.php                   [jsf_etch_count] shortcode
   class-admin-page.php                  Settings → JSF Etch Bridge (English docs, conditional sections)
 assets/js/count.js                      [jsf_etch_count] live updater (subscribes to JSF event bus)
@@ -143,7 +147,8 @@ git push origin main
 - **JSF + Merged / SQL / Data Store works ONLY in `je-jsf-stack` mode.** Default behaviour fetches a JE-paginated slice (one page) and force-disables WP_Query pagination, which breaks JSF and the count shortcode. With `je-jsf-stack`, the bridge fetches the FULL JE filter set, leaves WP_Query pagination flags alone, and lets WP_Query / JSF natively paginate the `post__in` subset. Cost: full fetch on every render — fine for moderate sets, expensive for large ones.
 - **SQL queries must return a recognisable ID column.** The heuristic looks for `ID` / `id` / `post_id` / `user_id` / `term_id`. Rows without one are silently skipped during ID extraction.
 - **Only `loopId`-mode Etch loops are bridged.** `target` / expression mode bypasses `WP_Query` entirely.
-- **Filter Indexer counts skip range filters and JetEngine CCT (custom meta tables).** Only `tax_query` and `meta_query` are supported.
+- **Filter Indexer counts skip range filters.** Only `tax_query` and `meta_query` are supported. JetEngine CMT (Custom Meta Tables) IS supported as of v0.7.0 — the indexer detects CMT context via `Manager::$storages` and queries the custom table directly when the filter's meta_key matches a registered CMT field. CCT (separate `wp_jet_cct_*` tables / no `wp_posts` link) is NOT directly supported because JSF cannot drive a non-WP-Query loop; bridge users would have to query the CCT as a JE SQL_Query and feed IDs.
+- **CMT redirect is Posts-only.** JE registers Custom_Tables Query handlers only for `object_type='post'` in core; user / term object types are gated behind a do_action that needs an add-on. The bridge therefore only mirrors the splitter for posts. Users / Terms loops with CMT would need extension via the same pattern.
 
 ## Security stance
 
