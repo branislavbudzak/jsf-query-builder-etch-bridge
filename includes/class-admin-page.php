@@ -464,9 +464,9 @@ ALTER TABLE wp_{prefix}_ad_listing_meta ADD INDEX idx_priority (listing_priority
 				</details>
 
 				<details>
-					<summary><strong><?php esc_html_e( 'Loopback fails on production with SSL errors', 'jsf-query-builder-etch-bridge' ); ?></strong></summary>
-					<p><?php esc_html_e( 'Default loopback uses', 'jsf-query-builder-etch-bridge' ); ?> <code>sslverify => false</code> <?php esc_html_e( 'for local-dev compatibility. Enable verification on production via:', 'jsf-query-builder-etch-bridge' ); ?></p>
-					<pre><code>add_filter( 'jqbeb_loopback_sslverify', '__return_true' );</code></pre>
+					<summary><strong><?php esc_html_e( 'Loopback fails on local dev with SSL errors', 'jsf-query-builder-etch-bridge' ); ?></strong></summary>
+					<p><?php esc_html_e( 'Default loopback uses', 'jsf-query-builder-etch-bridge' ); ?> <code>sslverify => true</code><?php esc_html_e( '. To allow self-signed certs on local dev:', 'jsf-query-builder-etch-bridge' ); ?></p>
+					<pre><code>add_filter( 'jqbeb_loopback_sslverify', '__return_false' );</code></pre>
 				</details>
 			</div>
 		</div>

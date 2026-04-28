@@ -94,6 +94,14 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			echo '<!-- jqbeb: no referrer -->';
 			return;
 		}
+		// Reject any referrer not on our own site. wp_get_referer() reads
+		// $_REQUEST['_wp_http_referer'] / $_SERVER['HTTP_REFERER'], both
+		// attacker-controlled. Without this guard the loopback wp_remote_get
+		// below would fetch arbitrary URLs (SSRF) AND forward $_COOKIE there.
+		if ( ! self::is_same_origin( $referrer ) ) {
+			echo '<!-- jqbeb: cross-origin referrer rejected -->';
+			return;
+		}
 
 		$forwarded = $_REQUEST;
 		unset( $forwarded['action'] );
@@ -210,16 +218,26 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			}
 		}
 
-		$loopback_cache_key = 'jqbeb_lb_' . md5( $url );
-		$cached             = get_transient( $loopback_cache_key );
-		if ( is_array( $cached ) && isset( $cached['inner'] ) ) {
-			echo $cached['inner']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — inner HTML from trusted self-loopback
-			$this->update_jsf_props(
-				$query_id,
-				$page_value,
-				isset( $cached['props'] ) && is_array( $cached['props'] ) ? $cached['props'] : null
-			);
-			return;
+		// Cache key isolates logged-in users from each other and from anonymous
+		// visitors. Without `u=` in the key, role-/login-/membership-gated loop
+		// content rendered for one user would be served to another for the 60s
+		// TTL. Filter `jqbeb_loopback_cache_enabled` lets sites with anonymous
+		// personalized content (cart, geo, A/B) disable caching entirely.
+		$cache_user_id      = is_user_logged_in() ? get_current_user_id() : 0;
+		$cache_enabled      = (bool) apply_filters( 'jqbeb_loopback_cache_enabled', true, $cache_user_id );
+		$loopback_cache_key = 'jqbeb_lb_' . md5( $url . '|u=' . $cache_user_id );
+
+		if ( $cache_enabled ) {
+			$cached = get_transient( $loopback_cache_key );
+			if ( is_array( $cached ) && isset( $cached['inner'] ) ) {
+				echo $cached['inner']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — inner HTML from trusted self-loopback
+				$this->update_jsf_props(
+					$query_id,
+					$page_value,
+					isset( $cached['props'] ) && is_array( $cached['props'] ) ? $cached['props'] : null
+				);
+				return;
+			}
 		}
 
 		$cookies = [];
@@ -229,8 +247,13 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 
 		$response = wp_remote_get( $url, [
 			'timeout'     => 15,
-			'redirection' => 3,
-			'sslverify'   => apply_filters( 'jqbeb_loopback_sslverify', false ),
+			// Loopback to ourselves never legitimately needs a redirect; not
+			// following them blocks any open redirect (or 3rd-party redirect
+			// reachable from home_url()) from ferrying cookies off-site.
+			'redirection' => 0,
+			// Default-secure. Local-dev override:
+			//   add_filter( 'jqbeb_loopback_sslverify', '__return_false' );
+			'sslverify'   => apply_filters( 'jqbeb_loopback_sslverify', true ),
 			'cookies'     => $cookies,
 			'headers'     => [
 				'X-JQBEB-Loopback' => '1',
@@ -259,14 +282,46 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// Strip props comment markers from inner HTML before sending to client.
 		$inner = preg_replace( '/<!--JQBEB-PROPS:[A-Za-z0-9+\/=]+-->/', '', $inner );
 
-		set_transient( $loopback_cache_key, [
-			'inner' => $inner,
-			'props' => $loopback_props,
-		], MINUTE_IN_SECONDS );
+		if ( $cache_enabled ) {
+			set_transient( $loopback_cache_key, [
+				'inner' => $inner,
+				'props' => $loopback_props,
+			], MINUTE_IN_SECONDS );
+		}
 
 		echo $inner; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 
 		$this->update_jsf_props( $query_id, $page_value, $loopback_props );
+	}
+
+	/**
+	 * True iff $url has the same scheme + host as home_url() or site_url().
+	 * Used to gate the loopback wp_remote_get against SSRF via spoofed
+	 * Referer / _wp_http_referer.
+	 */
+	private static function is_same_origin( string $url ): bool {
+		$ref = wp_parse_url( $url );
+		if ( empty( $ref['host'] ) ) {
+			return false;
+		}
+		foreach ( [ home_url(), site_url() ] as $known ) {
+			$cmp = wp_parse_url( $known );
+			if ( empty( $cmp['host'] ) ) {
+				continue;
+			}
+			if ( strcasecmp( $ref['host'], $cmp['host'] ) !== 0 ) {
+				continue;
+			}
+			// Require scheme match when both sides declare one — blocks
+			// https → http downgrade via referer spoof. If either side has
+			// no scheme, accept on host match alone.
+			if ( ! empty( $ref['scheme'] ) && ! empty( $cmp['scheme'] )
+				&& strcasecmp( $ref['scheme'], $cmp['scheme'] ) !== 0 ) {
+				continue;
+			}
+			return true;
+		}
+		return false;
 	}
 
 	private function extract_loopback_props( string $html, string $query_id ): ?array {

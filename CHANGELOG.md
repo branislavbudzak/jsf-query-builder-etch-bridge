@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.0.1
+
+### Security
+- Validate the loopback referer against `home_url()` / `site_url()` before issuing the AJAX self-loopback `wp_remote_get`. Prior versions used `wp_get_referer()` (attacker-controllable via `_wp_http_referer` / `HTTP_REFERER`) as the base URL with no host check, allowing an unauthenticated attacker hitting the JSF AJAX endpoint to make the server fetch arbitrary URLs (SSRF) and forward all of the visitor's `$_COOKIE` values to that target. A spoofed cross-origin referer now returns `<!-- jqbeb: cross-origin referrer rejected -->` and short-circuits before any outbound HTTP.
+- `sslverify` for the loopback now defaults to `true`. Local-dev override via `add_filter( 'jqbeb_loopback_sslverify', '__return_false' );` (filter name unchanged).
+- `redirection` for the loopback dropped from `3` to `0`. Loopback to ourselves never legitimately needs to follow redirects, and disallowing them blocks any open redirect (or 3rd-party redirect reachable from `home_url()`) from ferrying the request — and the forwarded cookies — off-site.
+- Rendered-HTML loopback transient cache key now includes the current user ID (`md5( $url . '|u=' . $user_id )`). Previously the 60-second cache was keyed by URL only, so role-/login-/membership-gated loop content rendered for one user could be served to another for the TTL window. New filter `apply_filters( 'jqbeb_loopback_cache_enabled', true, $user_id )` lets sites with anonymous personalized content (cart, geo, A/B) disable the cache entirely.
+
+### Notes
+- The block-tree cache (1 h TTL, keyed by URL path + query_id) is unchanged — it stores a parsed AST and re-runs `render_block()` in the current user's context on retrieval, so it does not leak rendered output across users.
+- Admin docs: SSL troubleshooting copy updated to reflect the new secure default.
+
 ## 1.0.0
 
 First public release. Folds the 0.x development line into a stable baseline. Both bridges (JSF + JE Query Builder) ship feature-complete with all advertised query types, JetEngine Custom Meta Tables support end-to-end, and a fast in-process AJAX render path.
