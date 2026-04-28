@@ -17,6 +17,52 @@ class JSF_Bridge {
 
 	private State_Stack $stack;
 
+	/**
+	 * Stack of query_ids for currently-open jsf-etch-loop wrappers.
+	 *
+	 * Indirection: we used to push directly to State_Stack at the
+	 * jsf-etch-loop wrapper's pre_render_block. But the wrapper also
+	 * contains dynamic-data sub-queries (e.g. a single partner CPT
+	 * lookup for a logo / name dereference) that fire BEFORE the
+	 * etch/loop child block renders. Those sub-queries' pre_get_posts
+	 * popped State_Stack first, so the actual loop query landed with
+	 * an empty stack and was never tagged → JSF provider's paged /
+	 * filter args never got applied.
+	 *
+	 * Now we push State_Stack only at the etch/loop child's
+	 * pre_render_block — that's the block whose VERY next WP_Query
+	 * IS the loop's own query, not a sibling lookup. This array
+	 * remembers per-wrapper which qid to push when the etch/loop
+	 * fires (push on wrapper open, pop on wrapper close).
+	 *
+	 * @var string[]
+	 */
+	private array $wrapper_qids_open = [];
+
+	/**
+	 * In-process AJAX render flag.
+	 *
+	 * Set to true by JSF_Provider::ajax_get_content() while it renders the
+	 * cached wrapper block tree directly (instead of HTTP loopback). Hooks
+	 * that normally bail on wp_doing_ajax() / is_admin() must run during
+	 * this render so the loop block can re-tag its WP_Query and JSF's
+	 * provider hook can re-apply filter / paged args.
+	 *
+	 * Static so JE_Bridge can also read it without a cross-instance handle.
+	 *
+	 * @var bool
+	 */
+	public static bool $in_ajax_render = false;
+
+	/**
+	 * Transient key for storing a cached wrapper block tree, keyed by URL
+	 * path + query_id. JSF_Provider reads this in ajax_get_content() to
+	 * render the loop directly without a full-page HTTP loopback.
+	 */
+	public static function block_cache_key( string $url_path, string $query_id ): string {
+		return 'jqbeb_block_' . md5( $url_path . '|' . $query_id );
+	}
+
 	public function __construct() {
 		$this->stack = new State_Stack();
 
@@ -114,22 +160,37 @@ class JSF_Bridge {
 	/* -------------------- CAPTURE STATE -------------------- */
 
 	public function on_pre_render_block( $pre, $block ) {
-		if ( wp_doing_ajax() || is_admin() ) {
+		if ( ! self::$in_ajax_render && ( wp_doing_ajax() || is_admin() ) ) {
 			return $pre;
 		}
-		if ( ( $block['blockName'] ?? '' ) !== 'etch/element' ) {
+
+		$bn = $block['blockName'] ?? '';
+
+		// Wrapper open: remember qid so we can push it onto State_Stack
+		// when this wrapper's etch/loop child renders.
+		if ( $bn === 'etch/element' ) {
+			$classes = self::get_classes( $block );
+			if ( preg_match( '/\bjsf-etch-loop\b/i', $classes ) ) {
+				$this->wrapper_qids_open[] = self::extract_query_id( $classes );
+			}
 			return $pre;
 		}
-		$classes = self::get_classes( $block );
-		if ( ! preg_match( '/\bjsf-etch-loop\b/i', $classes ) ) {
-			return $pre;
+
+		// Loop block inside an open jsf-etch-loop wrapper: push the topmost
+		// wrapper qid. The very next WP_Query that fires (Etch's loop
+		// handler instantiates one in get_loop_data) is the loop's own
+		// query — tag_query_for_jsf p50 will read this qid, tag the query,
+		// and pop. Sub-queries that fired before us (dynamic data lookups)
+		// landed on an empty stack and were correctly skipped.
+		if ( $bn === 'etch/loop' && ! empty( $this->wrapper_qids_open ) ) {
+			$this->stack->push( end( $this->wrapper_qids_open ) );
 		}
-		$this->stack->push( self::extract_query_id( $classes ) );
+
 		return $pre;
 	}
 
 	public function tag_query_for_jsf( \WP_Query $query ): void {
-		if ( is_admin() || wp_doing_ajax() ) {
+		if ( ! self::$in_ajax_render && ( is_admin() || wp_doing_ajax() ) ) {
 			return;
 		}
 		if ( $query->is_main_query() ) {
@@ -222,7 +283,7 @@ class JSF_Bridge {
 	}
 
 	public function on_render_block( $block_content, $block ) {
-		if ( wp_doing_ajax() || is_admin() ) {
+		if ( ! self::$in_ajax_render && ( wp_doing_ajax() || is_admin() ) ) {
 			return $block_content;
 		}
 		if ( ( $block['blockName'] ?? '' ) !== 'etch/element' ) {
@@ -235,8 +296,27 @@ class JSF_Bridge {
 
 		$query_id = self::extract_query_id( $classes );
 
+		// Cache the wrapper block tree for direct AJAX render. Only on
+		// initial page load (NOT during loopback, NOT during in-process
+		// AJAX render — those are reads, not writes). The cached tree
+		// lets JSF_Provider::ajax_get_content render the loop in-process
+		// instead of doing a full-page HTTP loopback (~10-50× faster).
+		if ( ! self::is_loopback() && ! self::$in_ajax_render ) {
+			$cache_key = self::block_cache_key( self::current_path(), $query_id );
+			set_transient(
+				$cache_key,
+				[
+					'block'   => $block,
+					'post_id' => (int) get_queried_object_id(),
+				],
+				HOUR_IN_SECONDS
+			);
+		}
+
 		// Only emit JSF props comment during loopback — picked up by the
 		// AJAX response parser to update found_posts / max_num_pages.
+		// Not needed for in-process render: provider reads props directly
+		// from JSF after the in-process render completes.
 		if ( self::is_loopback() && function_exists( 'jet_smart_filters' ) ) {
 			$props = jet_smart_filters()->query->get_query_props( 'etch-loop', $query_id );
 			if ( is_array( $props ) ) {
@@ -246,8 +326,12 @@ class JSF_Bridge {
 			}
 		}
 
-		// Safety-net pop: if no inner WP_Query fired, capture state may
-		// still hold this query_id. Pop until empty (cheap; usually empty).
+		// Wrapper close — pop the wrapper qid we tracked for this scope.
+		array_pop( $this->wrapper_qids_open );
+
+		// Safety-net pop: if etch/loop pushed but no inner WP_Query fired
+		// (e.g. preset missing), the State_Stack still has the qid. Pop
+		// it here so the next render starts with a clean stack.
 		if ( ! $this->stack->is_empty() ) {
 			$this->stack->pop();
 		}

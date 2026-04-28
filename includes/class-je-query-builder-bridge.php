@@ -77,6 +77,19 @@ class JE_Query_Builder_Bridge {
 	 */
 	private bool $in_extraction = false;
 
+	/**
+	 * Stack of encoded `{qid}|as=...|stack=1` strings for currently-open
+	 * je-etch-loop wrappers — pushed at wrapper open, popped at wrapper
+	 * close. The actual State_Stack push (which the dispatchers consume)
+	 * happens only when an `etch/loop` child block renders inside the
+	 * wrapper, so dynamic-data sub-queries that fire BEFORE the loop
+	 * block (e.g. partner CPT lookup) don't eat our state and pop it
+	 * before the loop's own query gets a chance to read it.
+	 *
+	 * @var string[]
+	 */
+	private array $wrapper_data_open = [];
+
 	public function __construct() {
 		$this->stack = new State_Stack();
 
@@ -122,32 +135,50 @@ class JE_Query_Builder_Bridge {
 	}
 
 	public function on_pre_render_block( $pre, $block ) {
-		if ( wp_doing_ajax() || is_admin() ) {
-			return $pre;
-		}
-		if ( ( $block['blockName'] ?? '' ) !== 'etch/element' ) {
-			return $pre;
-		}
-		$classes = self::get_classes( $block );
-		if ( ! preg_match( '/\bje-etch-loop\b/i', $classes ) ) {
-			return $pre;
-		}
-		$query_id = self::extract_query_id( $classes );
-		if ( ! $query_id ) {
+		if ( ! JSF_Bridge::$in_ajax_render && ( wp_doing_ajax() || is_admin() ) ) {
 			return $pre;
 		}
 
-		// Encode optional hints into the stack value.
-		// Format: {id}[|as={type}][|stack=1]
-		$parts   = [ $query_id ];
-		$as_hint = self::extract_as_hint( $classes );
-		if ( $as_hint ) {
-			$parts[] = 'as=' . $as_hint;
+		$bn = $block['blockName'] ?? '';
+
+		// Wrapper open — remember the encoded data for this je-etch-loop
+		// wrapper; the State_Stack push happens later when the etch/loop
+		// child renders. This indirection avoids dynamic-data sub-queries
+		// (e.g. a single partner-CPT lookup that fires DURING wrapper render
+		// but BEFORE the loop block) consuming our State_Stack via
+		// on_pre_get_posts and popping it before the loop's own query.
+		if ( $bn === 'etch/element' ) {
+			$classes = self::get_classes( $block );
+			if ( ! preg_match( '/\bje-etch-loop\b/i', $classes ) ) {
+				return $pre;
+			}
+			$query_id = self::extract_query_id( $classes );
+			if ( ! $query_id ) {
+				return $pre;
+			}
+
+			// Encode optional hints into the stack value.
+			// Format: {id}[|as={type}][|stack=1]
+			$parts   = [ $query_id ];
+			$as_hint = self::extract_as_hint( $classes );
+			if ( $as_hint ) {
+				$parts[] = 'as=' . $as_hint;
+			}
+			if ( self::has_jsf_stack_hint( $classes ) ) {
+				$parts[] = 'stack=1';
+			}
+			$this->wrapper_data_open[] = implode( '|', $parts );
+			return $pre;
 		}
-		if ( self::has_jsf_stack_hint( $classes ) ) {
-			$parts[] = 'stack=1';
+
+		// Loop block inside an open je-etch-loop wrapper — push the
+		// topmost wrapper data onto State_Stack. The next WP_*_Query that
+		// fires (Etch's loop handler instantiates one) is the loop's own
+		// query and the dispatcher will read + apply + pop.
+		if ( $bn === 'etch/loop' && ! empty( $this->wrapper_data_open ) ) {
+			$this->stack->push( end( $this->wrapper_data_open ) );
 		}
-		$this->stack->push( implode( '|', $parts ) );
+
 		return $pre;
 	}
 
@@ -157,7 +188,7 @@ class JE_Query_Builder_Bridge {
 		if ( $this->in_extraction ) {
 			return; // Recursive call from inside JE's internal query — let it run unmodified.
 		}
-		if ( is_admin() || wp_doing_ajax() ) {
+		if ( ! JSF_Bridge::$in_ajax_render && ( is_admin() || wp_doing_ajax() ) ) {
 			return;
 		}
 		if ( $query->is_main_query() ) {
@@ -194,7 +225,7 @@ class JE_Query_Builder_Bridge {
 		if ( $this->in_extraction ) {
 			return;
 		}
-		if ( is_admin() || wp_doing_ajax() ) {
+		if ( ! JSF_Bridge::$in_ajax_render && ( is_admin() || wp_doing_ajax() ) ) {
 			return;
 		}
 
@@ -217,7 +248,7 @@ class JE_Query_Builder_Bridge {
 		if ( $this->in_extraction ) {
 			return;
 		}
-		if ( is_admin() || wp_doing_ajax() ) {
+		if ( ! JSF_Bridge::$in_ajax_render && ( is_admin() || wp_doing_ajax() ) ) {
 			return;
 		}
 
@@ -285,6 +316,14 @@ class JE_Query_Builder_Bridge {
 			$ids = [ 0 ];
 		}
 
+		// Capture Etch preset's post_type BEFORE we override to 'any'.
+		// apply_cmt_redirect_late at p70 needs the actual CPT slug to
+		// match a CMT storage by object_slug; with post_type='any' the
+		// CMT redirect bails and JSF sort/filter on CMT fields silently
+		// fails (orderby=meta_value_num + meta_key=<cmt-field> joins
+		// wp_postmeta which has no CMT data → 0 rows).
+		$original_post_type = $query->get( 'post_type' );
+
 		$query->set( 'post__in', $ids );
 		$query->set( 'orderby', 'post__in' );
 		$query->set( 'ignore_sticky_posts', true );
@@ -292,6 +331,9 @@ class JE_Query_Builder_Bridge {
 		$query->set( 'post_status', 'any' );
 		$query->set( '_jqbeb_je_query_id', $je_query->id ?? '' );
 		$query->set( '_jqbeb_je_' . $marker, true );
+		if ( $original_post_type ) {
+			$query->set( '_jqbeb_je_original_post_type', $original_post_type );
+		}
 		if ( $jsf_stack ) {
 			$query->set( '_jqbeb_jsf_stack', true );
 		}
@@ -367,7 +409,7 @@ class JE_Query_Builder_Bridge {
 		if ( $this->in_extraction ) {
 			return;
 		}
-		if ( is_admin() || wp_doing_ajax() ) {
+		if ( ! JSF_Bridge::$in_ajax_render && ( is_admin() || wp_doing_ajax() ) ) {
 			return;
 		}
 		if ( $query->is_main_query() ) {
@@ -433,8 +475,19 @@ class JE_Query_Builder_Bridge {
 			return;
 		}
 
-		$post_types = (array) $query->get( 'post_type' );
-		$matching   = null;
+		// For SQL / Merged / Data Stores loops, apply_ids_to_posts overrides
+		// post_type to 'any' (post__in determines the result set, post_type
+		// would otherwise filter it back). The pre-override post_type is
+		// stashed in _jqbeb_je_original_post_type — use it for CMT storage
+		// matching, otherwise fall back to the live post_type query var
+		// (which is correct for apply_regular_to_posts).
+		$post_types = $query->get( '_jqbeb_je_original_post_type' );
+		if ( ! $post_types ) {
+			$post_types = $query->get( 'post_type' );
+		}
+		$post_types = (array) $post_types;
+
+		$matching = null;
 		foreach ( $manager->storages as $storage ) {
 			if ( ( $storage['object_type'] ?? '' ) !== 'post' ) {
 				continue;
@@ -876,7 +929,7 @@ class JE_Query_Builder_Bridge {
 	/* -------------------- SAFETY-NET POP -------------------- */
 
 	public function on_render_block( $block_content, $block ) {
-		if ( wp_doing_ajax() || is_admin() ) {
+		if ( ! JSF_Bridge::$in_ajax_render && ( wp_doing_ajax() || is_admin() ) ) {
 			return $block_content;
 		}
 		if ( ( $block['blockName'] ?? '' ) !== 'etch/element' ) {
@@ -886,7 +939,13 @@ class JE_Query_Builder_Bridge {
 		if ( ! preg_match( '/\bje-etch-loop\b/i', $classes ) ) {
 			return $block_content;
 		}
-		// Pop if a hook didn't claim it (e.g. preset type / JE type mismatch).
+
+		// Wrapper close — drop our wrapper-level tracking.
+		array_pop( $this->wrapper_data_open );
+
+		// Safety-net State_Stack pop in case etch/loop pushed but no
+		// matching dispatcher fired (e.g. preset type vs JE query type
+		// mismatch — JE query is posts but Etch preset is users-loop).
 		if ( ! $this->stack->is_empty() ) {
 			$this->stack->pop();
 		}

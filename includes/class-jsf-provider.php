@@ -52,7 +52,12 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 	}
 
 	public function apply_jsf_to_tagged_query( \WP_Query $query ): void {
-		if ( is_admin() ) {
+		// is_admin() is TRUE inside admin-ajax. The bridge's direct AJAX
+		// render path runs render_block() from there, so the loop's
+		// inner WP_Query fires pre_get_posts in admin-ajax context.
+		// Bypass the gate when we're in an in-process render so paged /
+		// filter args still get applied.
+		if ( ! JSF_Bridge::$in_ajax_render && is_admin() ) {
 			return;
 		}
 
@@ -127,6 +132,83 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 
 		$base_url = strtok( $referrer, '?' );
 		$url      = add_query_arg( $forwarded, $base_url );
+
+		// ============================================================
+		// FAST PATH — direct in-process block render.
+		//
+		// The bridge caches each rendered jsf-etch-loop wrapper block
+		// tree in a transient keyed by URL path + query_id (see
+		// JSF_Bridge::on_render_block). We retrieve the tree here and
+		// render it via render_block() directly, skipping the full-page
+		// HTTP loopback. JE listing-grid does the same thing, which is
+		// why its AJAX feels instant compared to a full-page reload.
+		//
+		// All bridge hooks (pre_render_block, pre_get_posts, render_block)
+		// bypass their wp_doing_ajax() / is_admin() early-returns via
+		// the JSF_Bridge::$in_ajax_render flag, so the loop's inner
+		// WP_Query gets re-tagged and JSF's provider hook re-applies
+		// paged + filter args exactly as on initial render.
+		//
+		// On cache miss (transient expired, never rendered, or different
+		// referrer) we fall through to the HTTP loopback below.
+		// ============================================================
+		$referrer_path    = wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/';
+		$direct_cache_key = JSF_Bridge::block_cache_key( $referrer_path, $query_id );
+		$direct_cached    = get_transient( $direct_cache_key );
+
+		if ( is_array( $direct_cached ) && ! empty( $direct_cached['block'] ) ) {
+
+			$post_id   = (int) ( $direct_cached['post_id'] ?? 0 );
+			$prev_post = $GLOBALS['post'] ?? null;
+
+			if ( $post_id > 0 ) {
+				$post_obj = get_post( $post_id );
+				if ( $post_obj ) {
+					$GLOBALS['post'] = $post_obj;
+					setup_postdata( $post_obj );
+				}
+			}
+
+			// Register our pre_get_posts p60 hook (apply_jsf_to_tagged_query).
+			// Normally this is registered by JSF's apply_filters_from_request
+			// path (called from parse_request on regular page loads + in the
+			// HTTP loopback). The admin-ajax dispatch path bypasses that —
+			// JSF jumps directly from ajax_apply_filters to ajax_get_content
+			// without ever calling apply_filters_in_request, so without this
+			// manual call the hook never fires and the loop's WP_Query keeps
+			// paged=0 (page 1) regardless of the request's `paged` value.
+			$this->apply_filters_in_request();
+
+			JSF_Bridge::$in_ajax_render = true;
+			try {
+				$rendered = render_block( $direct_cached['block'] );
+			} finally {
+				JSF_Bridge::$in_ajax_render = false;
+				if ( $post_id > 0 ) {
+					wp_reset_postdata();
+					$GLOBALS['post'] = $prev_post;
+				}
+			}
+
+			$inner = $this->extract_wrapper_inner_html( $rendered, $query_id );
+			if ( false === $inner ) {
+				// Could not extract inner — fall through to HTTP loopback.
+				delete_transient( $direct_cache_key );
+			} else {
+				// Strip any leftover props comment markers (defensive — the
+				// emit branch in on_render_block is gated on is_loopback()
+				// which is false in the direct path).
+				$inner = preg_replace( '/<!--JQBEB-PROPS:[A-Za-z0-9+\/=]+-->/', '', $inner );
+
+				echo $inner; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+
+				// Props were populated by the inner WP_Query during render
+				// (via JSF's the_posts filter). update_jsf_props with null
+				// loopback_props just merges the new page value on top.
+				$this->update_jsf_props( $query_id, $page_value, null );
+				return;
+			}
+		}
 
 		$loopback_cache_key = 'jqbeb_lb_' . md5( $url );
 		$cached             = get_transient( $loopback_cache_key );

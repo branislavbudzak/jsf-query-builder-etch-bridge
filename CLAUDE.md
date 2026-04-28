@@ -33,6 +33,16 @@ Both bridges use a per-bridge `State_Stack` instance (`includes/class-state-stac
 
 The two bridges have independent State_Stacks → no cross-contamination when both classes appear on the same wrapper.
 
+### JSF AJAX path: direct in-process render (v0.10.0+)
+
+JSF AJAX (filter / pagination / sort clicks) does NOT do an HTTP loopback to the original page URL. Instead, the bridge caches the parsed `etch/element` wrapper block tree in a transient at page render time (`JSF_Bridge::on_render_block` → `set_transient( JSF_Bridge::block_cache_key( $url_path, $query_id ), [block, post_id], HOUR_IN_SECONDS )`), and `JSF_Provider::ajax_get_content` retrieves it and renders it in-process via `render_block()`. Mirrors what JetEngine's listing-grid provider does (`get_render_instance('listing-grid', $attrs)->render()`).
+
+Critical mechanism: all bridge hooks (`pre_render_block`, `pre_get_posts`, `render_block`, JE bridge equivalents) bail on `wp_doing_ajax() || is_admin()` BY DEFAULT. During in-process AJAX render they must fire normally (so the inner WP_Query gets re-tagged and JSF's provider hook can re-apply paged + filter args). The bypass is the static flag `JSF_Bridge::$in_ajax_render` — set true around the `render_block()` call, hooks check `! self::$in_ajax_render && ( wp_doing_ajax() || is_admin() )` to early-return. JE_Bridge reads the same flag (both classes are in the `JQBEB` namespace, so unqualified reference resolves).
+
+**Cache miss fallback**: if the transient is gone (expired, never rendered for this URL+query_id, or extract failed), the provider falls through to the original HTTP loopback path (`wp_remote_get`). Same code as before — no regression for any working path.
+
+**Cache invalidation**: 1-hour TTL. Block edits in the editor are not auto-flushed; manual `wp transient delete --all` or wait 1h. Production-tier cache strategy if needed: hash `etch_loops` option into the cache key.
+
 ### Hook priority ladder (when both bridges are active on the same wrapper)
 
 ```
