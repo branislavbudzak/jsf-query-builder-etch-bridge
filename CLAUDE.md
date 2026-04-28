@@ -8,7 +8,7 @@ Two independent bridges that drive Etch's native Query Loop block from external 
 
 1. **JSF bridge** — registers an `Etch Loop` content provider for JetSmartFilters. Filter / pagination / sort blocks can drive any Etch loop (initial-load + AJAX), with multi-loop support via `jsf-etch-q-{slug}` classes, an indexer for per-option counts, and a `[jsf_etch_count]` shortcode.
 
-2. **JE Query Builder bridge** — lets a JetEngine Query Builder query become the data source for an Etch loop. Supports query types: `posts`, `users`, `terms`, `Merged_Query` (with base types posts / users / terms), and `SQL_Query` (target type inferred from `cast_object_to` or `je-as-{type}` wrapper hint).
+2. **JE Query Builder bridge** — lets a JetEngine Query Builder query become the data source for an Etch loop. Supports query types: `posts`, `users`, `terms`, `Merged_Query` (with base types posts / users / terms), `SQL_Query` (target type inferred from `cast_object_to` or `je-as-{type}` wrapper hint), and `Data_Stores_Query` (target type inferred from the store's post-vs-user setting).
 
 Each bridge runs only if its target plugin is active. Etch is the only hard dependency for either to do anything useful.
 
@@ -67,6 +67,12 @@ These were the foot-guns discovered during initial development. All have to rema
 4. **`Merged_Query` reports its `$query_type` as its `base_query_type`** (e.g. `'posts'` for a Merged of Posts queries). This means a Merged query LOOKS like a regular Posts query to type dispatch — `instanceof Merged_Query` MUST be checked first, otherwise calling `get_query_args()` on it returns a useless `array_merge` of all sub-queries' args. Merged is handled via a different path: pre-fetch `get_items()`, extract IDs, feed via `post__in` / `include`.
 
 5. **`SQL_Query` reports `$query_type === 'sql'`** which doesn't match any Etch loop preset directly. The bridge infers target type from (in priority order): wrapper class hint `je-as-{posts|users|terms}` → `cast_object_to` config (`WP_Post` / `WP_User` / `WP_Term`) → default `posts`. Same predefined-IDs path as Merged: `get_items()` → extract IDs → `post__in` / `include`. ID extraction handles WP_Post/WP_User/WP_Term instances AND raw stdClass rows from `$wpdb->get_results()` via heuristic column lookup (`ID` / `id` / `post_id` / `user_id` / `term_id`).
+
+6. **`Data_Stores_Query` reports `$query_type === 'data-stores-query'`** and wraps a Posts or Users sub-query that filters by store contents. Target type detection reads `final_query['store_slug']` and calls `Module::stores->get_store($slug)->is_user_store()` — cheap, no inner query materialisation. **Avoid calling `Data_Stores_Query::get_query_type()` directly** — it triggers `get_current_query()` which materialises the inner WP_Query / WP_User_Query (expensive) just to determine the type.
+
+7. **Re-entrancy guard.** Merged sub-queries, SQL `$wpdb->get_results()`, and Data Store inner queries fire `pre_get_posts` / `pre_user_query` / `pre_get_terms` from inside `extract_ids_from_get_items()`. Without a guard, our handlers would recurse on the same JE query (potentially infinite, definitely corrupting). The bridge sets `$this->in_extraction = true` around any JE method call that may instantiate WP_*_Query (`get_items()`, `get_query_args()`, `get_data_store_target_type()` setup), and dispatchers early-return when the flag is set. Wrap with `try/finally` so an exception cannot leave the flag stuck.
+
+8. **Data Store cache reset for `je-jsf-stack` mode.** `Data_Stores_Query` caches its inner query in `$current_query`. If we set `final_query` overrides AFTER `get_current_query()` has already materialised, the overrides have no effect. The bridge calls `$je_query->reset_query()` after applying overrides so the next `get_items()` rebuilds with our values.
 
 ## Wrapper class conventions
 
@@ -131,7 +137,7 @@ git push origin main
 
 - **JE Repeater / Comments / Current_WP_Query types are NOT supported.** Etch has no compatible loop handler. Adding them would require an Etch core change (filter on `LoopHandlerManager::get_loop_preset_data()`) — see plan history. Don't try to add them via reflection / monkey-patch.
 - **JSF integration is Posts-only.** JSF filters / pagination / sort do not drive Users / Terms loops. Adding it would require subclassing `Jet_Smart_Filters_Provider_Base` once per type with separate selectors.
-- **JSF + Merged / SQL works ONLY in `je-jsf-stack` mode.** Default Merged / SQL behaviour fetches a JE-paginated slice (one page) and force-disables WP_Query pagination, which breaks JSF and the count shortcode. With `je-jsf-stack`, the bridge fetches the FULL JE filter set, leaves WP_Query pagination flags alone, and lets WP_Query / JSF natively paginate the `post__in` subset. Cost: full fetch on every render — fine for moderate sets, expensive for large ones.
+- **JSF + Merged / SQL / Data Store works ONLY in `je-jsf-stack` mode.** Default behaviour fetches a JE-paginated slice (one page) and force-disables WP_Query pagination, which breaks JSF and the count shortcode. With `je-jsf-stack`, the bridge fetches the FULL JE filter set, leaves WP_Query pagination flags alone, and lets WP_Query / JSF natively paginate the `post__in` subset. Cost: full fetch on every render — fine for moderate sets, expensive for large ones.
 - **SQL queries must return a recognisable ID column.** The heuristic looks for `ID` / `id` / `post_id` / `user_id` / `term_id`. Rows without one are silently skipped during ID extraction.
 - **Only `loopId`-mode Etch loops are bridged.** `target` / expression mode bypasses `WP_Query` entirely.
 - **Filter Indexer counts skip range filters and JetEngine CCT (custom meta tables).** Only `tax_query` and `meta_query` are supported.

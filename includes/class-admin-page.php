@@ -62,7 +62,7 @@ class Admin_Page {
 				</p>
 				<ol>
 					<li><strong><?php esc_html_e( 'JetSmartFilters bridge', 'jsf-query-builder-etch-bridge' ); ?></strong> — <?php esc_html_e( 'lets JSF filter / pagination / sort blocks drive an Etch Query Loop, with AJAX filtering and per-option indexed counts.', 'jsf-query-builder-etch-bridge' ); ?></li>
-					<li><strong><?php esc_html_e( 'JetEngine Query Builder bridge', 'jsf-query-builder-etch-bridge' ); ?></strong> — <?php esc_html_e( 'lets a JE Query Builder query (Posts, Users, Terms, Merged Query, or SQL) become the data source for an Etch Query Loop, replacing the loop\'s built-in query.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><strong><?php esc_html_e( 'JetEngine Query Builder bridge', 'jsf-query-builder-etch-bridge' ); ?></strong> — <?php esc_html_e( 'lets a JE Query Builder query (Posts, Users, Terms, Merged Query, SQL, or Data Stores Query) become the data source for an Etch Query Loop, replacing the loop\'s built-in query.', 'jsf-query-builder-etch-bridge' ); ?></li>
 				</ol>
 				<p>
 					<?php esc_html_e( 'Each bridge runs on its own. Use either, both, or none. Etch is required for the bridges to do anything.', 'jsf-query-builder-etch-bridge' ); ?>
@@ -197,6 +197,11 @@ jsf-etch-loop jsf-etch-q-cars</code></pre>
 						<td><?php esc_html_e( 'wp-query / wp-users / wp-terms', 'jsf-query-builder-etch-bridge' ); ?></td>
 						<td><?php esc_html_e( 'same hook as inferred type', 'jsf-query-builder-etch-bridge' ); ?></td>
 					</tr>
+					<tr>
+						<td><code>Data Stores Query</code><br><small><?php esc_html_e( 'wraps Posts or Users sub-query', 'jsf-query-builder-etch-bridge' ); ?></small></td>
+						<td><?php esc_html_e( 'wp-query (post stores) / wp-users (user stores)', 'jsf-query-builder-etch-bridge' ); ?></td>
+						<td><?php esc_html_e( 'pre_get_posts / pre_user_query', 'jsf-query-builder-etch-bridge' ); ?></td>
+					</tr>
 				</table>
 				<p><?php esc_html_e( 'If the types do not match, the bridge silently no-ops and the Etch loop falls back to its preset query.', 'jsf-query-builder-etch-bridge' ); ?></p>
 
@@ -275,12 +280,40 @@ je-etch-loop je-q-partner-listings    <?php esc_html_e( '— Query ID slug', 'js
 					</ul>
 				</div>
 
-				<h3><?php esc_html_e( 'Opt-in: JSF compatibility for Merged / SQL queries', 'jsf-query-builder-etch-bridge' ); ?></h3>
-				<p><?php esc_html_e( 'Add', 'jsf-query-builder-etch-bridge' ); ?> <code>je-jsf-stack</code> <?php esc_html_e( 'to a Merged or SQL wrapper to enable JSF filter / pagination / sort + the [jsf_etch_count] shortcode.', 'jsf-query-builder-etch-bridge' ); ?></p>
+				<h3><?php esc_html_e( 'Data Stores Query (favourites, recently viewed, comparisons …)', 'jsf-query-builder-etch-bridge' ); ?></h3>
+				<p><?php esc_html_e( 'JE Data Store queries wrap a Posts or Users sub-query and filter it down to items the user has saved in a named store (e.g. "favourites"). The bridge supports them via the same pre-fetched-IDs path: extract IDs from', 'jsf-query-builder-etch-bridge' ); ?> <code>$ds_query-&gt;get_items()</code> <?php esc_html_e( 'and feed them to the Etch loop\'s WP_Query / WP_User_Query as', 'jsf-query-builder-etch-bridge' ); ?> <code>post__in</code> / <code>include</code><?php esc_html_e( '.', 'jsf-query-builder-etch-bridge' ); ?></p>
+
+				<p><strong><?php esc_html_e( 'Target type detection:', 'jsf-query-builder-etch-bridge' ); ?></strong></p>
+				<ul>
+					<li><?php esc_html_e( 'The bridge reads the Data Store\'s slug from', 'jsf-query-builder-etch-bridge' ); ?> <code>final_query['store_slug']</code><?php esc_html_e( ', looks up the store via JE\'s', 'jsf-query-builder-etch-bridge' ); ?> <code>Module::stores-&gt;get_store()</code><?php esc_html_e( ', and calls', 'jsf-query-builder-etch-bridge' ); ?> <code>$store-&gt;is_user_store()</code><?php esc_html_e( '.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'User store → Etch wp-users preset.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'Post store (default) → Etch wp-query preset.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><code>je-as-{type}</code> <?php esc_html_e( 'wrapper hint overrides the auto-detection if needed.', 'jsf-query-builder-etch-bridge' ); ?></li>
+				</ul>
+
+				<h4><?php esc_html_e( 'Example — favourites loop', 'jsf-query-builder-etch-bridge' ); ?></h4>
+				<ol>
+					<li><?php esc_html_e( 'Create a Data Store in', 'jsf-query-builder-etch-bridge' ); ?> <strong>JetEngine → Data Stores</strong> <?php esc_html_e( '(e.g. slug "favourites", type Post Store).', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'Create a JE Query Builder query of type Data Stores Query, pointing to the "favourites" store.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'On your Etch wrapper:', 'jsf-query-builder-etch-bridge' ); ?> <code>je-etch-loop je-q-{ds-query-id}</code></li>
+					<li><?php esc_html_e( 'Pick a wp-query Etch preset. The loop renders only the user\'s saved items.', 'jsf-query-builder-etch-bridge' ); ?></li>
+				</ol>
+
+				<div class="jqbeb-callout warn">
+					<strong><?php esc_html_e( 'Data Store caveats:', 'jsf-query-builder-etch-bridge' ); ?></strong>
+					<ul style="margin:8px 0 0 0;">
+						<li><?php esc_html_e( 'Default mode: pagination is delegated to JE (', 'jsf-query-builder-etch-bridge' ); ?><code>max_items</code> <?php esc_html_e( 'cap, current page from URL). Etch native pagination is bypassed.', 'jsf-query-builder-etch-bridge' ); ?></li>
+						<li><?php esc_html_e( 'JSF integration and the [jsf_etch_count] shortcode require opt-in', 'jsf-query-builder-etch-bridge' ); ?> <code>je-jsf-stack</code> <?php esc_html_e( 'mode (Posts data stores only — JSF is Posts-only in this plugin).', 'jsf-query-builder-etch-bridge' ); ?></li>
+						<li><?php esc_html_e( 'Empty store → bridge feeds', 'jsf-query-builder-etch-bridge' ); ?> <code>[0]</code> <?php esc_html_e( 'so the loop renders nothing rather than falling back to all posts.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					</ul>
+				</div>
+
+				<h3><?php esc_html_e( 'Opt-in: JSF compatibility for Merged / SQL / Data Store queries', 'jsf-query-builder-etch-bridge' ); ?></h3>
+				<p><?php esc_html_e( 'Add', 'jsf-query-builder-etch-bridge' ); ?> <code>je-jsf-stack</code> <?php esc_html_e( 'to a Merged / SQL / Data Store wrapper to enable JSF filter / pagination / sort + the [jsf_etch_count] shortcode.', 'jsf-query-builder-etch-bridge' ); ?></p>
 
 				<p><strong><?php esc_html_e( 'How it changes behaviour:', 'jsf-query-builder-etch-bridge' ); ?></strong></p>
 				<ul>
-					<li><?php esc_html_e( 'Bridge overrides JE\'s per-page caps (', 'jsf-query-builder-etch-bridge' ); ?><code>max_items_per_page</code> / <code>limit_per_page</code> / <code>limit</code><?php esc_html_e( ') to', 'jsf-query-builder-etch-bridge' ); ?> <code>0</code> <?php esc_html_e( 'and forces', 'jsf-query-builder-etch-bridge' ); ?> <code>_page = 1</code><?php esc_html_e( '. JE returns the FULL filter set on each render.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'Bridge overrides JE\'s per-page caps (', 'jsf-query-builder-etch-bridge' ); ?><code>max_items_per_page</code> / <code>limit_per_page</code> / <code>limit</code> / <code>max_items</code><?php esc_html_e( ') to unlimited and forces', 'jsf-query-builder-etch-bridge' ); ?> <code>_page = 1</code><?php esc_html_e( '. JE returns the FULL filter set on each render. For Data Stores, the inner query cache is reset so the override takes effect.', 'jsf-query-builder-etch-bridge' ); ?></li>
 					<li><?php esc_html_e( 'Bridge does NOT force-disable WP_Query pagination. The Etch preset\'s', 'jsf-query-builder-etch-bridge' ); ?> <code>posts_per_page</code> <?php esc_html_e( '(and JSF\'s', 'jsf-query-builder-etch-bridge' ); ?> <code>paged</code> <?php esc_html_e( 'AJAX param) drive native pagination over the', 'jsf-query-builder-etch-bridge' ); ?> <code>post__in</code> <?php esc_html_e( 'subset.', 'jsf-query-builder-etch-bridge' ); ?></li>
 					<li><?php esc_html_e( 'JSF', 'jsf-query-builder-etch-bridge' ); ?> <code>meta_query</code> / <code>tax_query</code> <?php esc_html_e( 'merge naturally on top — the result is the intersection of JE\'s pre-fetched IDs and JSF\'s filter constraints.', 'jsf-query-builder-etch-bridge' ); ?></li>
 					<li><code>found_posts</code> <?php esc_html_e( 'is computed correctly →', 'jsf-query-builder-etch-bridge' ); ?> <code>[jsf_etch_count]</code> <?php esc_html_e( 'shows real counts of the filtered subset.', 'jsf-query-builder-etch-bridge' ); ?></li>
@@ -314,7 +347,7 @@ je-etch-loop je-q-partner-listings    <?php esc_html_e( '— Query ID slug', 'js
 					<li><code>pre_get_posts</code> p60 — <?php esc_html_e( 'JSF merges filter args on top of the JE base.', 'jsf-query-builder-etch-bridge' ); ?></li>
 				</ol>
 				<p><?php esc_html_e( 'For JE Users / Terms queries, JSF integration is not wired — JSF is a Posts-only content provider in this plugin.', 'jsf-query-builder-etch-bridge' ); ?></p>
-				<p><?php esc_html_e( 'For JE Merged / SQL queries with Posts base type, opt into JSF integration by adding', 'jsf-query-builder-etch-bridge' ); ?> <code>je-jsf-stack</code> <?php esc_html_e( 'to the wrapper. Combined wrapper:', 'jsf-query-builder-etch-bridge' ); ?></p>
+				<p><?php esc_html_e( 'For JE Merged / SQL / Data Store queries with Posts base type, opt into JSF integration by adding', 'jsf-query-builder-etch-bridge' ); ?> <code>je-jsf-stack</code> <?php esc_html_e( 'to the wrapper. Combined wrapper:', 'jsf-query-builder-etch-bridge' ); ?></p>
 				<pre><code>jsf-etch-loop jsf-etch-q-cars je-etch-loop je-q-cars je-jsf-stack</code></pre>
 			</div>
 			<?php endif; ?>
@@ -323,10 +356,10 @@ je-etch-loop je-q-partner-listings    <?php esc_html_e( '— Query ID slug', 'js
 			<div class="jqbeb-section">
 				<h2><?php esc_html_e( 'Limitations', 'jsf-query-builder-etch-bridge' ); ?></h2>
 				<ul>
-					<li><?php esc_html_e( 'JE Query Builder bridge supports Posts, Users, Terms, Merged Query, and SQL types. Repeater, Comments, Current_WP_Query are NOT supported (Etch has no compatible loop preset for them).', 'jsf-query-builder-etch-bridge' ); ?></li>
-					<li><?php esc_html_e( 'JE query type and Etch loop preset type must match (Posts↔wp-query, Users↔wp-users, Terms↔wp-terms). For Merged Query, match the merge\'s base type. For SQL, the target type is inferred from the wrapper hint or cast_object_to. Mismatch causes silent no-op — Etch falls back to its preset query.', 'jsf-query-builder-etch-bridge' ); ?></li>
-					<li><?php esc_html_e( 'JSF integration is Posts-only. For regular Posts queries it works out of the box. For Merged / SQL queries it requires opt-in via', 'jsf-query-builder-etch-bridge' ); ?> <code>je-jsf-stack</code> <?php esc_html_e( 'wrapper class (full JE fetch + native WP_Query / JSF pagination).', 'jsf-query-builder-etch-bridge' ); ?></li>
-					<li><?php esc_html_e( 'In default Merged / SQL mode (no je-jsf-stack), JE owns pagination internally — Etch\'s native pagination and JSF integration are bypassed.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'JE Query Builder bridge supports Posts, Users, Terms, Merged Query, SQL, and Data Stores Query types. Repeater, Comments, Current_WP_Query are NOT supported (Etch has no compatible loop preset for them).', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'JE query type and Etch loop preset type must match (Posts↔wp-query, Users↔wp-users, Terms↔wp-terms). For Merged Query, match the merge\'s base type. For SQL, target type is inferred from the wrapper hint or cast_object_to. For Data Stores, target type is read from the store\'s post-vs-user setting. Mismatch causes silent no-op — Etch falls back to its preset query.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'JSF integration is Posts-only. For regular Posts queries it works out of the box. For Merged / SQL / Data Store Posts queries it requires opt-in via', 'jsf-query-builder-etch-bridge' ); ?> <code>je-jsf-stack</code> <?php esc_html_e( 'wrapper class (full JE fetch + native WP_Query / JSF pagination).', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'In default Merged / SQL / Data Store mode (no je-jsf-stack), JE owns pagination internally — Etch\'s native pagination and JSF integration are bypassed.', 'jsf-query-builder-etch-bridge' ); ?></li>
 					<li><?php esc_html_e( 'SQL queries must return rows with a recognisable ID column (ID / id / post_id / user_id / term_id) for the bridge to extract IDs. Rows without one are skipped.', 'jsf-query-builder-etch-bridge' ); ?></li>
 					<li><?php esc_html_e( 'Only Etch loops in loopId mode (the regular dropdown selection) are supported. Target / expression mode does not use WP_Query.', 'jsf-query-builder-etch-bridge' ); ?></li>
 					<li><?php esc_html_e( 'JSF Filter Indexer counts do not work for Custom Content Types stored in custom meta tables, or for range filters.', 'jsf-query-builder-etch-bridge' ); ?></li>
@@ -350,6 +383,13 @@ je-etch-loop je-q-partner-listings    <?php esc_html_e( '— Query ID slug', 'js
 					<li><?php esc_html_e( 'Query ID does not match. Numeric ID = the JE query post ID; slug = the value of the "Query ID" field in JE Query Builder settings.', 'jsf-query-builder-etch-bridge' ); ?></li>
 					<li><?php esc_html_e( 'Query type / loop preset type mismatch. Use a Posts JE query with a wp-query Etch preset, a Users JE query with a wp-users preset, or a Terms JE query with a wp-terms preset.', 'jsf-query-builder-etch-bridge' ); ?></li>
 					<li><?php esc_html_e( 'JE query type is Repeater / Comments — not supported.', 'jsf-query-builder-etch-bridge' ); ?></li>
+				</ul>
+
+				<h3><?php esc_html_e( 'Data Store loop renders empty / wrong items', 'jsf-query-builder-etch-bridge' ); ?></h3>
+				<ul>
+					<li><?php esc_html_e( 'The store is empty for the current user — verify by adding an item via the JE data-store actions, or by checking the front-store cookie / user meta.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'Etch preset type doesn\'t match the store type. Post stores need a wp-query preset, user stores need a wp-users preset.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><?php esc_html_e( 'In', 'jsf-query-builder-etch-bridge' ); ?> <code>je-jsf-stack</code> <?php esc_html_e( 'mode but JSF still doesn\'t paginate — confirm both', 'jsf-query-builder-etch-bridge' ); ?> <code>jsf-etch-loop</code> <?php esc_html_e( 'and', 'jsf-query-builder-etch-bridge' ); ?> <code>je-etch-loop</code> <?php esc_html_e( 'classes are present.', 'jsf-query-builder-etch-bridge' ); ?></li>
 				</ul>
 
 				<h3><?php esc_html_e( 'SQL query renders empty / wrong items', 'jsf-query-builder-etch-bridge' ); ?></h3>
