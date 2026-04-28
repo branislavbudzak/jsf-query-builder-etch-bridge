@@ -16,9 +16,12 @@ Each bridge runs only if its target plugin is active. Etch is the only hard depe
 
 ### Bridge instantiation timing
 
-`Plugin::boot()` runs at `plugins_loaded` (default priority). It instantiates bridges immediately at that hook — NOT at `init`. This is critical because JSF fires its `jet-smart-filters/providers/register` action at **`init` priority `-998`**. If our `JSF_Bridge` weren't ready before that, the `Etch Loop` provider would never register.
+`Plugin::boot()` runs at `plugins_loaded` (default priority).
 
-At `plugins_loaded`, all plugin main files have been included, so JSF and JE class definitions exist regardless of plugin load order.
+- **JSF bridge** is instantiated immediately at `plugins_loaded`. Critical: JSF fires `jet-smart-filters/providers/register` at **`init` priority `-998`**, so if `JSF_Bridge` weren't ready before that hook, the `Etch Loop` provider would never register.
+- **JE bridge** is deferred to `init` priority `0` via `Plugin::maybe_boot_je_bridge()`. **JetEngine registers `\Jet_Engine\Query_Builder\Manager` via its components-manager at `init` priority `-1`** (`includes/core/components-manager.php`), so at `plugins_loaded` the class doesn't yet exist and `class_exists('\Jet_Engine\Query_Builder\Manager')` returns false. Booting the JE bridge at `plugins_loaded` would silently no-op (this was the v0.6.0 bug). All of the JE bridge's hooks (`pre_render_block`, `pre_get_posts`, `pre_user_query`, `pre_get_terms`) fire well after `init`, so `init p0` registration is safe.
+
+At `plugins_loaded`, all plugin **main files** have been included (so JSF function `jet_smart_filters` exists), but JE component classes are NOT yet loaded — they appear at `init -1`.
 
 ### State_Stack pattern
 

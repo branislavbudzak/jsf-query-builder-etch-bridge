@@ -51,12 +51,24 @@ class Plugin {
 			$this->shortcode = new Shortcode();
 		}
 
-		if ( $this->is_je_query_builder_active() ) {
-			require_once JQBEB_DIR . 'includes/class-je-query-builder-bridge.php';
-			$this->je_bridge = new JE_Query_Builder_Bridge();
-		}
+		// JE bridge MUST defer to init p0. JetEngine registers
+		// \Jet_Engine\Query_Builder\Manager via its components-manager on
+		// init priority -1, so at plugins_loaded the class doesn't exist yet
+		// and is_je_query_builder_active() would return false. The bridge's
+		// own hooks (pre_render_block, pre_get_posts, pre_user_query,
+		// pre_get_terms) all fire well after init, so init p0 registration
+		// is safe.
+		add_action( 'init', [ $this, 'maybe_boot_je_bridge' ], 0 );
 
 		add_action( 'admin_notices', [ $this, 'maybe_show_etch_missing_notice' ] );
+	}
+
+	public function maybe_boot_je_bridge(): void {
+		if ( ! $this->is_je_query_builder_active() ) {
+			return;
+		}
+		require_once JQBEB_DIR . 'includes/class-je-query-builder-bridge.php';
+		$this->je_bridge = new JE_Query_Builder_Bridge();
 	}
 
 	public function is_etch_active(): bool {
