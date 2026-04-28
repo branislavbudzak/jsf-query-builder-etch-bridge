@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 0.7.1
+Stable tag: 0.8.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,10 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 0.8.0 =
+* JSF active filtering and sorting on CMT-stored fields now works end-to-end. Previously the bridge's CMT redirect ran at `pre_get_posts` priority 40, BEFORE JSF's filter merge at priority 60, so any filter clauses JSF added for a CMT field landed in `meta_query` (going to `wp_postmeta`) instead of `custom_table_query` (going to the custom table). The redirect is now wired as a separate `apply_cmt_redirect_late` handler at priority **70**, strictly after JSF's merge, so the split sees the combined meta_query (JE base + JSF filters) and routes every CMT clause into `custom_table_query`. JSF sort filters on CMT fields work the same way — the orderby rewrite also happens at p70.
+* This completes CMT support for Posts queries: JE base meta_query + orderby, JSF user filters, JSF user sort, and Filter Indexer counts all read/write the correct table.
 
 = 0.7.1 =
 * Fix: CMT redirect emitted the unprefixed table name (`ad_listing_meta` instead of `wp_xxx_ad_listing_meta`), so the resulting `INNER JOIN` referenced a non-existent table and the query silently returned 0 rows. The bridge now obtains the prefixed name via `Manager::get_db_instance($slug, $fields)->table()` — the same path JE itself uses internally — instead of `Manager::get_table_name($slug)`, which only returns the slug-derived raw name. Both the JE bridge (`apply_cmt_redirect`) and the JSF Filter Indexer (`detect_cmt_for_args`) are corrected.

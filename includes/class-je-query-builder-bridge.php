@@ -88,6 +88,15 @@ class JE_Query_Builder_Bridge {
 		add_action( 'pre_get_posts', [ $this, 'on_pre_get_posts' ], 40 );
 		add_action( 'pre_user_query', [ $this, 'on_pre_user_query' ], 10 );
 		add_action( 'pre_get_terms', [ $this, 'on_pre_get_terms' ], 10 );
+
+		// CMT redirect runs LATE (priority 70) so it sees the meta_query
+		// AFTER JSF's filter merge at priority 60. If we split earlier (at
+		// p40 next to apply_regular_to_posts), JSF-added meta_query clauses
+		// referencing CMT fields would not be redirected and would search
+		// wp_postmeta — which never has the values — yielding 0 rows for
+		// any JSF filter on a CMT field. Running at p70 ensures the split
+		// is over the FINAL meta_query (JE base + JSF filters merged).
+		add_action( 'pre_get_posts', [ $this, 'apply_cmt_redirect_late' ], 70 );
 	}
 
 	public static function get_classes( array $block ): string {
@@ -239,9 +248,8 @@ class JE_Query_Builder_Bridge {
 			$query->set( $key, $value );
 		}
 		$query->set( '_jqbeb_je_query_id', $je_query->id ?? '' );
-
-		// CMT redirect: see apply_cmt_redirect() docblock.
-		$this->apply_cmt_redirect( $query );
+		// CMT redirect deliberately deferred to apply_cmt_redirect_late
+		// (pre_get_posts p70) so it sees JSF's filter merge from p60.
 	}
 
 	private function apply_regular_to_users( \WP_User_Query $query, $je_query ): void {
@@ -342,6 +350,34 @@ class JE_Query_Builder_Bridge {
 	}
 
 	/* -------------------- CMT (Custom Meta Tables) REDIRECT -------------------- */
+
+	/**
+	 * Late hook (pre_get_posts priority 70) that runs the CMT redirect on
+	 * any query our bridge tagged with `_jqbeb_je_query_id`. Runs AFTER
+	 * JSF's filter merge at priority 60 so the split sees the combined
+	 * meta_query (JE base + JSF filters) and routes every CMT-stored
+	 * clause into `custom_table_query`. Bails on:
+	 *
+	 *   - re-entrant pre_get_posts inside our own JE method calls
+	 *   - admin / AJAX
+	 *   - main query
+	 *   - queries we did not mark
+	 */
+	public function apply_cmt_redirect_late( \WP_Query $query ): void {
+		if ( $this->in_extraction ) {
+			return;
+		}
+		if ( is_admin() || wp_doing_ajax() ) {
+			return;
+		}
+		if ( $query->is_main_query() ) {
+			return;
+		}
+		if ( ! $query->get( '_jqbeb_je_query_id' ) ) {
+			return;
+		}
+		$this->apply_cmt_redirect( $query );
+	}
 
 	/**
 	 * Detect CMT-stored fields in the applied JE args and replicate JE's
