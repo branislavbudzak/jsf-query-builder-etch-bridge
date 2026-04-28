@@ -194,6 +194,23 @@ class JSF_Bridge {
 				(array) $query->query_vars,
 				array_flip( $relevant_keys )
 			);
+
+			// JSF's Indexer_Data::prepare_ajax_data calls
+			// merge_query_args( get_default_queries(), get_query_args() )
+			// which array_merge()s on the keys below. Defaults reach that
+			// code via $_REQUEST['defaults'] (form-encoded POST), which
+			// stringifies every scalar — so a stored `meta_query => false`
+			// arrives as the string "false", passes JSF's `! empty()` gate,
+			// and fatals `array_merge("false", ...)`. WP_Query exposes such
+			// non-array values for these keys whenever the loop preset
+			// doesn't populate them (Etch presets set meta_query=false).
+			// Drop any non-array value here so JSF only ever sees arrays.
+			foreach ( [ 'meta_query', 'tax_query', 'post__not_in' ] as $merged_key ) {
+				if ( isset( $default_args[ $merged_key ] ) && ! is_array( $default_args[ $merged_key ] ) ) {
+					unset( $default_args[ $merged_key ] );
+				}
+			}
+
 			jet_smart_filters()->query->store_provider_default_query(
 				'etch-loop',
 				$default_args,

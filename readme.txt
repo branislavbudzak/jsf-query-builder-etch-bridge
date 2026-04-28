@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 0.9.0
+Stable tag: 0.9.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,9 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 0.9.1 =
+* Fix: JSF Pagination AJAX fataled with `array_merge(): Argument #1 must be of type array, string given` in `Indexer_Data::prepare_ajax_data` whenever the loop preset left `meta_query`, `tax_query`, or `post__not_in` as a non-array value (Etch presets default `meta_query` to `false`). The bridge stored those raw `query_vars` as the JSF default query at `pre_get_posts` p50; JSF localised them, JS POSTed them back as `defaults` (form-encoded → `false` becomes the string `"false"`), and JSF's `merge_query_args` then called `array_merge("false", ...)`. `tag_query_for_jsf` now drops any non-array value for those three keys before calling `store_provider_default_query`, so JSF only ever sees arrays for keys it array_merges.
 
 = 0.9.0 =
 * Admin page rebuilt with a tabbed layout (Overview / JSF Bridge / JE Bridge / Combined & CMT / Reference). Conditional tabs only appear if the matching dependency is active. Active tab persists in URL hash.
