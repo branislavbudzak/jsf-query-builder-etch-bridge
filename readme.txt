@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 0.8.0
+Stable tag: 0.8.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,9 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 0.8.1 =
+* Fix: Filter Indexer counts (taxonomy and meta) were not being computed because the bridge never registered its loop's base query with JSF via `store_provider_default_query()`. JSF's `prepare_localized_data` iterates `get_default_queries()` to find providers eligible for indexing — providers without an entry are skipped, so no indexed_data was ever localized to JS, and AJAX filter changes sent empty `query_args` to the indexer endpoint (counting against the wrong post type). The bridge's `tag_query_for_jsf()` now stores a curated subset of the loop's query_vars (post_type, post_status, posts_per_page, meta_query, tax_query, date_query, orderby, order, meta_key, post__in, post__not_in, paged) at `pre_get_posts` priority 50 — after the JE bridge's arg injection at p40, before JSF's filter merge at p60 — so JSF's Indexer flow has a correct baseline for both the localized-data path and the AJAX path. Affects all loops driven by the bridge: pure JSF (Etch Loop) and JSF + JE Query Builder.
 
 = 0.8.0 =
 * JSF active filtering and sorting on CMT-stored fields now works end-to-end. Previously the bridge's CMT redirect ran at `pre_get_posts` priority 40, BEFORE JSF's filter merge at priority 60, so any filter clauses JSF added for a CMT field landed in `meta_query` (going to `wp_postmeta`) instead of `custom_table_query` (going to the custom table). The redirect is now wired as a separate `apply_cmt_redirect_late` handler at priority **70**, strictly after JSF's merge, so the split sees the combined meta_query (JE base + JSF filters) and routes every CMT clause into `custom_table_query`. JSF sort filters on CMT fields work the same way — the orderby rewrite also happens at p70.

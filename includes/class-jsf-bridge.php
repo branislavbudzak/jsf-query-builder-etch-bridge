@@ -153,6 +153,54 @@ class JSF_Bridge {
 
 		$query->set( 'jet_smart_filters', 'etch-loop/' . $query_id );
 
+		// Register this loop's base query with JSF so the Indexer can find
+		// us in get_default_queries() and Filter Indexer counts work.
+		//
+		// JSF's flow:
+		//   - prepare_localized_data (initial page load) iterates
+		//     get_default_queries(); providers without an entry are skipped
+		//     entirely → no indexed_data localized to JS → no counts.
+		//   - AJAX filter requests carry query_args sent from JS, which JS
+		//     populated from the same localized default_queries; without
+		//     our entry, JS sends empty args → indexer queries the wrong
+		//     post type → tax_query / meta_query counts are wrong or zero.
+		//
+		// All other JSF providers (epro-loop-grid, woocommerce-archive,
+		// jet-engine-calendar, etc.) call this same method at render time.
+		// We do it here at pre_get_posts p50 because by this point the JE
+		// bridge p40 has injected its base args (post_type, meta_query,
+		// tax_query, orderby, etc.) but JSF p60 has not yet merged user
+		// filter values — that is exactly the "default" baseline JSF
+		// expects. CMT split (p70) has not run either, so meta_query is
+		// still in its raw JE form; the indexer's count_query will
+		// re-trigger JE's own pre_get_posts splitter when it instantiates
+		// a fresh WP_Query, so the CMT JOIN gets emitted there too.
+		if ( function_exists( 'jet_smart_filters' ) ) {
+			$relevant_keys = [
+				'post_type',
+				'post_status',
+				'posts_per_page',
+				'meta_query',
+				'tax_query',
+				'date_query',
+				'orderby',
+				'order',
+				'meta_key',
+				'post__in',
+				'post__not_in',
+				'paged',
+			];
+			$default_args = array_intersect_key(
+				(array) $query->query_vars,
+				array_flip( $relevant_keys )
+			);
+			jet_smart_filters()->query->store_provider_default_query(
+				'etch-loop',
+				$default_args,
+				$query_id
+			);
+		}
+
 		$this->stack->pop();
 	}
 
