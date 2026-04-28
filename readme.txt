@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 0.8.1
+Stable tag: 0.9.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,14 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 0.9.0 =
+* Admin page rebuilt with a tabbed layout (Overview / JSF Bridge / JE Bridge / Combined & CMT / Reference). Conditional tabs only appear if the matching dependency is active. Active tab persists in URL hash.
+* Hot, repetitive content collapsed into `<details>` sub-sections (Merged / SQL / Data Stores / je-jsf-stack / shortcode / per-troubleshooting topic) for faster scanning. Body content wrapped in `.jqbeb-card-body` for consistent padding in open state.
+* `<details>` accordion arrow rebuilt as CSS-drawn triangle inside a flexbox-aligned summary; rotates cleanly without layout jump on open. Hover state for affordance. Nested sub-details get smaller grey/blue triangles for visual hierarchy.
+* Inline dependency status pills in the page header (always visible).
+* New "Combined & CMT" tab consolidates: hook-priority ladder, full CMT support matrix (JE base, JSF user filter, sort, indexer counts, [jsf_etch_count]), and a performance tip recommending MySQL indexes on hot CMT columns for range / sort queries.
+* Updated content to reflect CMT support added in 0.7.0–0.8.1; previous "not supported" notes for CMT in the indexer have been removed.
 
 = 0.8.1 =
 * Fix: Filter Indexer counts (taxonomy and meta) were not being computed because the bridge never registered its loop's base query with JSF via `store_provider_default_query()`. JSF's `prepare_localized_data` iterates `get_default_queries()` to find providers eligible for indexing — providers without an entry are skipped, so no indexed_data was ever localized to JS, and AJAX filter changes sent empty `query_args` to the indexer endpoint (counting against the wrong post type). The bridge's `tag_query_for_jsf()` now stores a curated subset of the loop's query_vars (post_type, post_status, posts_per_page, meta_query, tax_query, date_query, orderby, order, meta_key, post__in, post__not_in, paged) at `pre_get_posts` priority 50 — after the JE bridge's arg injection at p40, before JSF's filter merge at p60 — so JSF's Indexer flow has a correct baseline for both the localized-data path and the AJAX path. Affects all loops driven by the bridge: pure JSF (Etch Loop) and JSF + JE Query Builder.
