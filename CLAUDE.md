@@ -131,16 +131,18 @@ assets/js/count.js                      [jsf_etch_count] live updater (subscribe
 
 ## Versioning workflow
 
-This is a pre-1.0 plugin currently. Bump cadence:
+Plugin is on SemVer post-1.0:
 
-- **Bug fix**: `0.x.y` → `0.x.(y+1)` with `fix:` commit prefix.
-- **Feature**: `0.x.y` → `0.(x+1).0` with `feat:` commit prefix.
-- **1.0.0**: only when user explicitly confirms staging behaviour is solid.
+- **Patch (bug fix)**: `x.y.z` → `x.y.(z+1)` with `fix:` commit prefix.
+- **Minor (feature, backwards-compatible)**: `x.y.z` → `x.(y+1).0` with `feat:` commit prefix.
+- **Major (breaking change)**: `x.y.z` → `(x+1).0.0`. Document migration in CHANGELOG and readme.txt.
 
-When bumping, update **all three** in the same commit:
+When bumping, update **all five** in the same commit:
 1. Plugin header `Version:` in `jsf-query-builder-etch-bridge.php`
 2. `JQBEB_VERSION` constant in the same file
 3. `readme.txt` `Stable tag:` and `== Changelog ==` entry
+4. `CHANGELOG.md` (Keep a Changelog format)
+5. Tag with `git tag v{x.y.z}` and push (`git push origin main v{x.y.z}`)
 
 Cache-bust note: `assets/js/count.js` is enqueued with `JQBEB_VERSION` as its version param. Bumping the constant invalidates the browser cache automatically.
 

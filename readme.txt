@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 0.10.0
+Stable tag: 1.0.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,9 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.0.0 =
+* First public release. Folds the 0.x development line into a stable baseline. Both bridges (JSF + JE Query Builder) ship feature-complete with all advertised query types, JetEngine Custom Meta Tables support end-to-end (filter, sort, indexer counts, [jsf_etch_count] shortcode), and a fast in-process AJAX render path that mirrors JetEngine's listing-grid provider architecture.
 
 = 0.10.0 =
 * Performance: JSF AJAX (filter / pagination / sort) now renders the loop directly in-process instead of doing a full-page HTTP loopback (`wp_remote_get` to the same URL → DOMDocument extract). Each `jsf-etch-loop` wrapper block tree is cached in a transient at page render time, keyed by URL path + query_id (1 hour TTL). On AJAX, `JSF_Provider::ajax_get_content` retrieves the cached tree and calls `render_block()` directly — no HTTPS handshake, no theme/header/footer render, no full-page parse. Mirrors the architecture JetEngine's listing-grid provider uses (`jet_engine()->listings->get_render_instance()->render()`). Expected speedup: 2–3 seconds → 50–200 ms.

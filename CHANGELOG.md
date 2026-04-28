@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.0.0
+
+First public release. Folds the 0.x development line into a stable baseline. Both bridges (JSF + JE Query Builder) ship feature-complete with all advertised query types, JetEngine Custom Meta Tables support end-to-end, and a fast in-process AJAX render path.
+
+### Highlights
+- **JSF Bridge.** Etch Loop registered as a JetSmartFilters content provider. Initial-load and AJAX filtering, pagination, and sort. Multi-loop support per page via `jsf-etch-q-{slug}` classes. `[jsf_etch_count]` shortcode for live `found_posts` / `max_num_pages` / current page.
+- **JE Query Builder Bridge.** JetEngine Query Builder queries can drive any Etch Query Loop as the data source. Supported query types: Posts, Users, Terms, Merged Query, SQL, Data Stores Query. Wrapper class hints (`je-q-{id}`, `je-as-{type}`, `je-jsf-stack`) for routing.
+- **JetEngine Custom Meta Tables (CMT) end-to-end.** JE base meta_query + orderby, JSF user filtering, JSF user sort, and Filter Indexer per-option counts all read/write the correct table.
+- **Filter Indexer counts.** Per-option counts on JSF filters via the `jet-smart-filters/pre-get-indexed-data` hook. Supports `tax_query` and `meta_query` (postmeta and CMT).
+- **Fast AJAX render path.** Direct in-process `render_block()` of the cached wrapper block tree. Mirrors JetEngine's listing-grid provider — no full-page HTTP loopback for filter / pagination / sort clicks.
+- **Settings → JSF Etch Bridge admin page.** Tabbed layout with conditional sections (only what's relevant for the active dependencies), inline status pills, hook priority ladder, full CMT support matrix.
+
 ## 0.9.0
 
 ### Changed
