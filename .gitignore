@@ -9,3 +9,4 @@ vendor/
 *.swp
 *.swo
 .phpunit.result.cache
+.playwright-mcp/

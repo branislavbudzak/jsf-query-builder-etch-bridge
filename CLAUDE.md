@@ -123,11 +123,14 @@ includes/
   class-shortcode.php                   [jsf_etch_count] shortcode
   class-admin-page.php                  Settings → JSF Etch Bridge (English docs, conditional sections)
 assets/js/count.js                      [jsf_etch_count] live updater (subscribes to JSF event bus)
+assets/js/range-fill.js                 Page-load fill for JSF Range filter editable text inputs. Bridges JSF 3.8.0.1+ async dynamic-range pattern (data-dynamic-range-pending + clearPendingDynamicRangeDisplay) by calling `updateRangeBounds()` directly on `jet-smart-filters/inited` for our `etch-loop` provider; legacy `input`-event dispatch path retained for JSF 3.7.x.
 ```
 
 ## Filterable behaviour
 
 - `apply_filters('jqbeb_loopback_sslverify', false)` — set to `true` (or `__return_true`) on production for proper SSL verification on the JSF AJAX self-loopback.
+- `apply_filters('jqbeb_loopback_cache_enabled', true, $cache_user_id)` — disable the 60-second rendered-HTML loopback cache (return `false`) on sites with anonymous personalized content (cart, geo, A/B). Cache is per-user-ID; safe for typical role-/login-/membership-gated content.
+- `apply_filters('jqbeb_range_cmt_override_enabled', true, $args, $instance)` — opt-out of the v1.0.2 JSF Range filter min/max recompute against JE CMT tables. Return `false` to fall back to JSF's default `wp_postmeta` query (which yields empty bounds for CMT fields).
 
 ## Versioning workflow
 
@@ -165,7 +168,11 @@ git push origin main
 - **JSF + Merged / SQL / Data Store works ONLY in `je-jsf-stack` mode.** Default behaviour fetches a JE-paginated slice (one page) and force-disables WP_Query pagination, which breaks JSF and the count shortcode. With `je-jsf-stack`, the bridge fetches the FULL JE filter set, leaves WP_Query pagination flags alone, and lets WP_Query / JSF natively paginate the `post__in` subset. Cost: full fetch on every render — fine for moderate sets, expensive for large ones.
 - **SQL queries must return a recognisable ID column.** The heuristic looks for `ID` / `id` / `post_id` / `user_id` / `term_id`. Rows without one are silently skipped during ID extraction.
 - **Only `loopId`-mode Etch loops are bridged.** `target` / expression mode bypasses `WP_Query` entirely.
-- **Filter Indexer counts skip range filters.** Only `tax_query` and `meta_query` are supported. JetEngine CMT (Custom Meta Tables) IS supported as of v0.7.0 — the indexer detects CMT context via `Manager::$storages` and queries the custom table directly when the filter's meta_key matches a registered CMT field. CCT (separate `wp_jet_cct_*` tables / no `wp_posts` link) is NOT directly supported because JSF cannot drive a non-WP-Query loop; bridge users would have to query the CCT as a JE SQL_Query and feed IDs.
+- **Filter Indexer counts skip range filters** (per-option counts not generated for sliders). Only `tax_query` and `meta_query` are supported. JetEngine CMT (Custom Meta Tables) IS supported as of v0.7.0 — the indexer detects CMT context via `Manager::$storages` and queries the custom table directly when the filter's meta_key matches a registered CMT field. CCT (separate `wp_jet_cct_*` tables / no `wp_posts` link) is NOT directly supported because JSF cannot drive a non-WP-Query loop; bridge users would have to query the CCT as a JE SQL_Query and feed IDs.
+- **Range filter dynamic min/max IS CMT-aware (v1.0.2+).** Hooks `jet-smart-filters/filter-instance/args` priority 20. Accepts two `_source_callback` values:
+  1. **`jet_smart_filters_meta_values`** — JSF's built-in "Get from Post Meta by query meta key". Queries `wp_postmeta` and returns NULL for CMT fields → JSF falls back to defaults. Bridge detects CMT field membership across all `Manager::$storages` (any storage matched).
+  2. **`jet_engine_custom_storage_post_{slug}`** — JE-NATIVE per-CMT callback registered by `\Jet_Engine\CPT\Custom_Tables\Query::register_range_min_max_callback`. UI label is "{Post Type}: Get from custom storage by query meta key". JE's own callback (custom-tables/query.php:73) queries the right table BUT can return `[ 'min' => null, 'max' => null ]` when the SQL has no rows or all-NULL aggregates; JSF then drops to manual fallback because `isset($data['min'])` is FALSE on NULL. Bridge pins the lookup to the storage slug encoded in the callback name.
+  Bridge SQL: `SELECT MIN(FLOOR(t.{col})), MAX(CEILING(t.{col})) FROM {cmt_table} t INNER JOIN wp_posts p ON p.ID = t.object_ID WHERE t.{col} IS NOT NULL AND t.{col} <> '' AND p.post_type = %s AND p.post_status IN (%s,...)`. Statuses come from `apply_filters('jet-smart-filters/dynamic-min-max/search-statuses', ['publish'])`. Step-rounding mirrors `Jet_Smart_Filters_Range_Filter::max_value_for_current_step`. Per-request memoised by filter ID (hit + miss). Provider-agnostic — gates on data-shape, not `content_provider`. Opt-out via `apply_filters( 'jqbeb_range_cmt_override_enabled', true, $args, $instance )`. Per-option indexer counts for sliders remain out of scope.
 - **CMT redirect is Posts-only.** JE registers Custom_Tables Query handlers only for `object_type='post'` in core; user / term object types are gated behind a do_action that needs an add-on. The bridge therefore only mirrors the splitter for posts. Users / Terms loops with CMT would need extension via the same pattern.
 
 ## Security stance

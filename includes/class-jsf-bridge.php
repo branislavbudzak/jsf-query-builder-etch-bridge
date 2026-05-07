@@ -55,6 +55,17 @@ class JSF_Bridge {
 	public static bool $in_ajax_render = false;
 
 	/**
+	 * Per-request memoisation for Range filter dynamic min/max recomputed
+	 * from JE Custom Meta Tables. Keyed by JSF filter post ID. Stores
+	 * [float $min, float $max] on hit, [null, null] on miss (so we don't
+	 * re-run the SQL when the same filter instance is constructed multiple
+	 * times within one request — sitemap, hierarchy, dynamic tags, etc.).
+	 *
+	 * @var array<int, array{0: ?float, 1: ?float}>
+	 */
+	private array $range_minmax_cache = [];
+
+	/**
 	 * Transient key for storing a cached wrapper block tree, keyed by URL
 	 * path + query_id. JSF_Provider reads this in ajax_get_content() to
 	 * render the loop directly without a full-page HTTP loopback.
@@ -79,6 +90,12 @@ class JSF_Bridge {
 		add_action( 'wp_footer', [ $this, 'output_footer_data' ], 5 );
 
 		add_filter( 'jet-smart-filters/pre-get-indexed-data', [ $this, 'compute_indexed_counts' ], 10, 4 );
+
+		// Recompute JSF Range filter dynamic min/max from JE Custom Meta Tables
+		// when the filter's meta_key is a registered CMT field. JSF's built-in
+		// jet_smart_filters_meta_values callback queries wp_postmeta and returns
+		// NULL for CMT-stored fields, leaving the slider with empty bounds.
+		add_filter( 'jet-smart-filters/filter-instance/args', [ $this, 'override_range_min_max_for_cmt' ], 20, 2 );
 
 		add_action( 'jet-smart-filters/providers/register', [ $this, 'register_provider' ] );
 	}
@@ -346,9 +363,36 @@ class JSF_Bridge {
 			'jqbeb-count',
 			JQBEB_URL . 'assets/js/count.js',
 			[],
-			JQBEB_VERSION,
+			$this->asset_version( 'assets/js/count.js' ),
 			true
 		);
+		// Range filter pending-state resolver — bridges JSF 3.8.0.1+ async
+		// dynamic-range pattern for our 'etch-loop' provider. See
+		// assets/js/range-fill.js for full notes.
+		wp_enqueue_script(
+			'jqbeb-range-fill',
+			JQBEB_URL . 'assets/js/range-fill.js',
+			[ 'jet-smart-filters' ],
+			$this->asset_version( 'assets/js/range-fill.js' ),
+			true
+		);
+	}
+
+	/**
+	 * Cache-busting version for an enqueued asset.
+	 *
+	 * Uses the file's mtime so any edit (or fresh deploy that rewrites the
+	 * file) automatically changes the `?ver=` query string, forcing CDN
+	 * (BunnyCDN, LiteSpeed, etc.) and browser caches to refetch. Falls back
+	 * to JQBEB_VERSION if mtime can't be read.
+	 */
+	private function asset_version( string $relative_path ): string {
+		$abs   = JQBEB_DIR . ltrim( $relative_path, '/' );
+		$mtime = is_readable( $abs ) ? @filemtime( $abs ) : false;
+		if ( $mtime ) {
+			return JQBEB_VERSION . '.' . $mtime;
+		}
+		return JQBEB_VERSION;
 	}
 
 	public function output_footer_data(): void {
@@ -553,6 +597,267 @@ class JSF_Bridge {
 	 */
 	private function sanitize_cmt_column( string $col ): string {
 		return preg_replace( '/[^A-Za-z0-9_]/', '', $col ) ?: '';
+	}
+
+	/* -------------------- RANGE FILTER (CMT) -------------------- */
+
+	/**
+	 * Hooked on `jet-smart-filters/filter-instance/args` (priority 20).
+	 *
+	 * JSF's "Range" filter has a "Get min/max dynamically: Get from custom
+	 * storage by query meta key" option that resolves bounds via the
+	 * jet_smart_filters_meta_values callback — which queries wp_postmeta.
+	 * For JE CPTs using JetEngine Custom Meta Tables (CMT), the field's
+	 * value lives in {cmt_table}.{column}, NOT wp_postmeta, so the SQL
+	 * returns NULL and the slider has empty min/max.
+	 *
+	 * When the filter targets a CMT-registered meta_key, this method
+	 * recomputes min/max from the CMT table(s), applies the same step
+	 * rounding JSF does for max, and overrides the args.
+	 *
+	 * The bug is data-shape (where the meta lives), not provider-specific,
+	 * so we don't gate on `content_provider === 'etch-loop'` — any JSF
+	 * range filter targeting a CMT-registered meta_key benefits.
+	 *
+	 * @param array<string,mixed> $args
+	 * @param object              $instance Jet_Smart_Filters_Filter_Instance
+	 * @return array<string,mixed>
+	 */
+	public function override_range_min_max_for_cmt( $args, $instance ) {
+		if ( ! is_array( $args ) ) {
+			return $args;
+		}
+		if ( ( $args['query_type'] ?? '' ) !== 'meta_query' ) {
+			return $args;
+		}
+		if ( ! is_object( $instance ) || ! isset( $instance->type ) ) {
+			return $args;
+		}
+		if ( ! ( $instance->type instanceof \Jet_Smart_Filters_Range_Filter ) ) {
+			return $args;
+		}
+
+		$filter_id = (int) ( $args['filter_id'] ?? 0 );
+		if ( ! $filter_id ) {
+			return $args;
+		}
+
+		$source_cb = get_post_meta( $filter_id, '_source_callback', true );
+
+		// Two callbacks land in CMT territory:
+		//
+		// 1. `jet_smart_filters_meta_values` — JSF's built-in "Get from Post
+		//    Meta by query meta key" callback (jet-smart-filters/includes/
+		//    functions.php:67). It queries `wp_postmeta` directly. For CMT
+		//    post types the meta lives in {cmt_table}.{column}, not
+		//    `wp_postmeta`, so it returns NULL → JSF falls back to manual
+		//    `_source_min` / `_source_max` (default 0/100).
+		//
+		// 2. `jet_engine_custom_storage_post_{slug}` — JE-NATIVE CMT
+		//    callback registered by `\Jet_Engine\CPT\Custom_Tables\Query::
+		//    register_range_min_max_callback` for each CMT storage. UI label
+		//    is "{Post Type}: Get from custom storage by query meta key".
+		//    JE's callback (custom-tables/query.php:73) queries the right
+		//    table BUT has a known sharp edge: when the SQL returns NULL
+		//    min/max (column has only NULL values, or SQL warns silently),
+		//    JE returns `[ 'min' => null, 'max' => null ]`. JSF's
+		//    `isset($data['min'])` on NULL evaluates to FALSE → falls back
+		//    to manual `_source_min` / `_source_max` (default 0/100).
+		//
+		// We accept both. The JE-native form also lets us pin the lookup to
+		// the explicit storage slug instead of inferring from field membership.
+		$is_postmeta_cb = ( $source_cb === 'jet_smart_filters_meta_values' );
+		$je_native_prefix = 'jet_engine_custom_storage_post_';
+		$is_je_native_cb  = is_string( $source_cb )
+			&& strpos( $source_cb, $je_native_prefix ) === 0;
+
+		if ( ! $is_postmeta_cb && ! $is_je_native_cb ) {
+			return $args;
+		}
+
+		$je_restrict_slug = $is_je_native_cb
+			? substr( $source_cb, strlen( $je_native_prefix ) )
+			: null;
+
+		// Per-site / per-request escape valve.
+		if ( ! apply_filters( 'jqbeb_range_cmt_override_enabled', true, $args, $instance ) ) {
+			return $args;
+		}
+
+		$query_var = (string) ( $args['query_var'] ?? '' );
+		if ( $query_var === '' ) {
+			return $args;
+		}
+
+		// JSF accepts comma-separated meta keys for range. Pipe ('|') is the
+		// query_var_suffix separator — do NOT split on it.
+		$meta_keys = array_filter( array_map( 'trim', explode( ',', $query_var ) ) );
+		if ( empty( $meta_keys ) ) {
+			return $args;
+		}
+
+		// Cache: same filter instance can be constructed many times per
+		// request (manager / sitemap / hierarchy / dynamic tags).
+		if ( array_key_exists( $filter_id, $this->range_minmax_cache ) ) {
+			[ $cached_min, $cached_max ] = $this->range_minmax_cache[ $filter_id ];
+			if ( $cached_min === null || $cached_max === null ) {
+				return $args;
+			}
+			return $this->apply_range_minmax( $args, $cached_min, $cached_max );
+		}
+
+		$targets = $this->find_cmt_targets_for_meta_keys( $meta_keys, $je_restrict_slug );
+		if ( empty( $targets ) ) {
+			$this->range_minmax_cache[ $filter_id ] = [ null, null ];
+			return $args;
+		}
+
+		[ $min, $max ] = $this->compute_cmt_range_min_max( $targets );
+		if ( $min === null || $max === null ) {
+			$this->range_minmax_cache[ $filter_id ] = [ null, null ];
+			return $args;
+		}
+
+		$this->range_minmax_cache[ $filter_id ] = [ $min, $max ];
+		return $this->apply_range_minmax( $args, $min, $max );
+	}
+
+	/**
+	 * Override $args['min'] / $args['max'] and snap max to the filter's step
+	 * (mirror of Jet_Smart_Filters_Range_Filter::max_value_for_current_step).
+	 *
+	 * @param array<string,mixed> $args
+	 */
+	private function apply_range_minmax( array $args, float $min, float $max ): array {
+		$step = (float) ( $args['step'] ?? 1 );
+		if ( $step > 0 && $step !== 1.0 && $max >= $min ) {
+			$steps_count = (int) ceil( ( $max - $min ) / $step );
+			$max         = $steps_count * $step + $min;
+		}
+		$args['min'] = $min;
+		$args['max'] = $max;
+		return $args;
+	}
+
+	/**
+	 * For each meta_key, find which JE CMT storages register a column of
+	 * that name and return the (table, column, post_type) tuples.
+	 *
+	 * @param string[] $meta_keys
+	 * @param ?string  $restrict_to_slug When non-null (JE-native callback case),
+	 *                                   only the storage whose `object_slug`
+	 *                                   matches is considered — the user picked
+	 *                                   a specific CPT in the JSF dropdown so
+	 *                                   we should not silently widen the lookup.
+	 * @return array<int, array{table: string, column: string, post_type: string}>
+	 */
+	private function find_cmt_targets_for_meta_keys( array $meta_keys, ?string $restrict_to_slug = null ): array {
+		if ( ! class_exists( '\Jet_Engine\CPT\Custom_Tables\Manager' ) ) {
+			return [];
+		}
+		$manager = \Jet_Engine\CPT\Custom_Tables\Manager::instance();
+		if ( empty( $manager->storages ) ) {
+			return [];
+		}
+
+		$targets = [];
+		foreach ( $manager->storages as $storage ) {
+			if ( ( $storage['object_type'] ?? '' ) !== 'post' ) {
+				continue;
+			}
+			$fields = $storage['fields'] ?? [];
+			if ( empty( $fields ) ) {
+				continue;
+			}
+			$slug = (string) ( $storage['object_slug'] ?? '' );
+			if ( $slug === '' ) {
+				continue;
+			}
+			if ( $restrict_to_slug !== null && $slug !== $restrict_to_slug ) {
+				continue;
+			}
+			$matched = array_values( array_intersect( $meta_keys, $fields ) );
+			if ( empty( $matched ) ) {
+				continue;
+			}
+			// $wpdb->prefix-prefixed name, matching how JE itself writes the
+			// table in custom_table_query — same path used by detect_cmt_for_args.
+			$db    = $manager->get_db_instance( $slug, $fields );
+			$table = $db ? (string) $db->table() : '';
+			if ( $table === '' ) {
+				continue;
+			}
+			foreach ( $matched as $field ) {
+				$col = $this->sanitize_cmt_column( (string) $field );
+				if ( $col === '' ) {
+					continue;
+				}
+				$targets[] = [
+					'table'     => $table,
+					'column'    => $col,
+					'post_type' => $slug,
+				];
+			}
+		}
+		return $targets;
+	}
+
+	/**
+	 * Run MIN(FLOOR())/MAX(CEILING()) per (table, column, post_type) tuple
+	 * and aggregate. Mirrors the WHERE-status logic of JSF's own
+	 * jet_smart_filters_meta_values (the filter `jet-smart-filters/dynamic-min-max/search-statuses`).
+	 *
+	 * Restricting by p.post_type keeps results scoped when two CMT
+	 * storages share a column name (rare but possible).
+	 *
+	 * @param array<int, array{table: string, column: string, post_type: string}> $targets
+	 * @return array{0: ?float, 1: ?float}
+	 */
+	private function compute_cmt_range_min_max( array $targets ): array {
+		global $wpdb;
+
+		$statuses = apply_filters( 'jet-smart-filters/dynamic-min-max/search-statuses', [ 'publish' ] );
+		$statuses = array_values( array_filter( array_map( 'strval', (array) $statuses ) ) );
+		if ( empty( $statuses ) ) {
+			$statuses = [ 'publish' ];
+		}
+		$status_placeholders = implode( ',', array_fill( 0, count( $statuses ), '%s' ) );
+
+		$min = null;
+		$max = null;
+
+		foreach ( $targets as $t ) {
+			// $t['table'] and $t['column'] are not bind-able as identifiers;
+			// they are sanitized via sanitize_cmt_column() and are sourced
+			// from Manager::$storages[*]['fields'] (trust source).
+			$sql = "SELECT MIN(FLOOR(t.`{$t['column']}`)) AS mn,
+			               MAX(CEILING(t.`{$t['column']}`)) AS mx
+			        FROM `{$t['table']}` AS t
+			        INNER JOIN {$wpdb->posts} AS p ON p.ID = t.object_ID
+			        WHERE t.`{$t['column']}` IS NOT NULL
+			          AND t.`{$t['column']}` <> ''
+			          AND p.post_type    = %s
+			          AND p.post_status IN ({$status_placeholders})";
+
+			$prepared = $wpdb->prepare(
+				$sql,
+				array_merge( [ $t['post_type'] ], $statuses )
+			);
+			$row = $wpdb->get_row( $prepared );
+			if ( ! $row ) {
+				continue;
+			}
+			if ( $row->mn !== null && $row->mn !== '' ) {
+				$candidate = (float) $row->mn;
+				$min       = ( $min === null ) ? $candidate : min( $min, $candidate );
+			}
+			if ( $row->mx !== null && $row->mx !== '' ) {
+				$candidate = (float) $row->mx;
+				$max       = ( $max === null ) ? $candidate : max( $max, $candidate );
+			}
+		}
+
+		return [ $min, $max ];
 	}
 
 	/* -------------------- PROVIDER REGISTRATION -------------------- */

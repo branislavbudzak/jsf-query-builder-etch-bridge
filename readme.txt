@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.0.1
+Stable tag: 1.0.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -45,7 +45,7 @@ Each bridge runs on its own. Use either, both, or none.
 * JSF integration with Users / Terms loops is NOT supported (no JSF content provider for those types in this version).
 * SQL queries must return a recognisable ID column (`ID` / `id` / `post_id` / `user_id` / `term_id`). Rows without one are skipped.
 * Only loopId-mode Etch loops are supported (target / expression mode bypasses WP_Query).
-* JSF Filter Indexer counts skip range filters and CCT (custom meta tables).
+* JSF Filter Indexer counts skip range filters (per-option counts not generated for sliders) and CCT (separate `wp_jet_cct_*` tables). Range filter dynamic min/max via "Get from custom storage by query meta key" IS supported on JE Custom Meta Tables (Custom Storage) post types as of 1.0.2.
 
 == Installation ==
 
@@ -54,6 +54,11 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.0.2 =
+* Fix: JSF Range filter dynamic min/max for JE post types using Custom Meta Tables (CMT / Custom Storage). Sliders showed empty bounds on page load — both with JSF's built-in `jet_smart_filters_meta_values` callback (queries `wp_postmeta` which holds nothing for CMT fields) AND with JE's native `jet_engine_custom_storage_post_{slug}` callback (returns null min/max when the column has only NULL values, which JSF drops via `isset()` against NULL falling back to manual `_source_min` / `_source_max`). Bridge now hooks `jet-smart-filters/filter-instance/args` priority 20 and recomputes min/max from the CMT table when the filter's meta_key is a registered CMT field, scoped by the storage's `object_slug` post_type and the `jet-smart-filters/dynamic-min-max/search-statuses` filter (default `['publish']`), with step-rounding mirroring JSF's native `max_value_for_current_step`. Comma-separated multi-key filters are aggregated across columns. Per-request memoisation by filter ID. Provider-agnostic — gates on data-shape (CMT field membership), not `content_provider`. Opt-out via `apply_filters( 'jqbeb_range_cmt_override_enabled', true, $args, $instance )`. Manual min/max (`_source_callback = 'none'`), WooCommerce price, term meta, and user meta callbacks are untouched.
+* Fix: JSF 3.8.0.1+ async dynamic-range integration for our `etch-loop` provider. JSF 3.8.0.1 ships a new flow where the template emits empty `value=""` on editable text inputs (`.jet-range__inputs__min` / `.jet-range__inputs__max`) and `data-dynamic-range-pending="1"` on the wrapper. JSF's range constructor then calls `clearPendingDynamicRangeDisplay()` which explicitly empties the editable inputs and waits for `JetSmartFilterSettings.jetFiltersDynamicRange` to populate them via `updateRangeBounds()` on `jet-smart-filters/inited`. Crocoblock-native providers self-register into that localized structure, our `etch-loop` provider does not, so every range filter on the bridge stayed empty until the user dragged a thumb. Bridge now ships `assets/js/range-fill.js` that listens for `jet-smart-filters/inited` plus a `MutationObserver` on `data-jet-inited` (catches AJAX-injected filter blocks AND covers race conditions where the inited event fired before our listener attached), then calls `updateRangeBounds({min, max})` directly using the slider input's `min` / `max` attrs (already populated correctly by the PHP hook). Backwards-compatible with JSF 3.7.x via the legacy slider-input-event dispatch path.
+* Internal: frontend asset enqueue now uses `filemtime()` combined with `JQBEB_VERSION` so any edit auto-invalidates browser / Cloudflare / LiteSpeed / BunnyCDN caches without needing a manual purge.
 
 = 1.0.1 =
 * Security: validate the loopback referer against `home_url()` / `site_url()` before issuing the AJAX self-loopback `wp_remote_get`. Prior versions used `wp_get_referer()` (attacker-controllable via `_wp_http_referer` / `HTTP_REFERER`) as the base URL with no host check, allowing an unauthenticated attacker hitting the JSF AJAX endpoint to make the server fetch arbitrary URLs (SSRF) and forward all of the visitor's `$_COOKIE` values to that target. A spoofed cross-origin referer now returns `<!-- jqbeb: cross-origin referrer rejected -->` and short-circuits before any outbound HTTP.
