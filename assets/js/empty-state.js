@@ -3,7 +3,7 @@
  *
  * When a JSF-driven Etch loop wrapper (.jsf-etch-loop) becomes empty —
  * either on initial render with 0 matching posts, or after an AJAX
- * filter pass yields 0 results (v1.0.4+ ensures the wrapper visibly
+ * filter pass yields 0 results (v1.1.0+ ensures the wrapper visibly
  * clears via the `<!--jqbeb:empty-results-->` sentinel) — this script:
  *
  *   1. Toggles `is-empty` on each `.jsf-etch-loop` wrapper, so site
@@ -64,7 +64,7 @@
 	}
 
 	function loopHasContent( loop ) {
-		// HTML comments don't count as content (the v1.0.4 sentinel is one),
+		// HTML comments don't count as content (the v1.1.0 empty-results sentinel is one),
 		// nor does whitespace-only text — both are normal in a freshly cleared
 		// wrapper. Any element OR meaningful text means the loop has results.
 		var children = loop.childNodes;

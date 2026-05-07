@@ -202,6 +202,70 @@ jsf-etch-loop jsf-etch-q-cars</code></pre>
 					<p class="description"><?php esc_html_e( 'CMT-stored fields are auto-detected and queried directly against the custom table — see Combined & CMT tab for details.', 'jsf-query-builder-etch-bridge' ); ?></p>
 				</div>
 			</details>
+
+			<details class="jqbeb-card">
+				<summary><h2><?php esc_html_e( 'Range filter dynamic min/max', 'jsf-query-builder-etch-bridge' ); ?></h2></summary>
+				<div class="jqbeb-card-body">
+					<p><?php esc_html_e( 'Range filter sliders (price, mileage, year, etc.) auto-resolve their min/max bounds from the current data set, including JetEngine Custom Meta Tables.', 'jsf-query-builder-etch-bridge' ); ?></p>
+
+					<h3><?php esc_html_e( 'Initial page-load bounds', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<p><?php esc_html_e( 'In the JSF filter\'s', 'jsf-query-builder-etch-bridge' ); ?> <strong><?php esc_html_e( 'Get min/max dynamically', 'jsf-query-builder-etch-bridge' ); ?></strong> <?php esc_html_e( 'dropdown, pick either:', 'jsf-query-builder-etch-bridge' ); ?></p>
+					<ul>
+						<li><code><?php esc_html_e( 'Get from Post Meta by query meta key', 'jsf-query-builder-etch-bridge' ); ?></code> — <?php esc_html_e( 'works on plain postmeta AND on CMT fields (the bridge intercepts and queries the right table).', 'jsf-query-builder-etch-bridge' ); ?></li>
+						<li><code>{<?php esc_html_e( 'Post Type', 'jsf-query-builder-etch-bridge' ); ?>}: <?php esc_html_e( 'Get from custom storage by query meta key', 'jsf-query-builder-etch-bridge' ); ?></code> — <?php esc_html_e( 'JE-native CMT callback. Same end result.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					</ul>
+					<p class="description"><?php esc_html_e( 'Without the bridge, both options yield empty bounds on CMT fields (JSF\'s built-in callback queries wp_postmeta which holds nothing for CMT; JE\'s callback returns NULL on empty/NULL aggregates that JSF then drops). The bridge recomputes from the right table with proper post_type and post_status scoping.', 'jsf-query-builder-etch-bridge' ); ?></p>
+
+					<h3><?php esc_html_e( 'Live recalculation as other filters change (JSF 3.8.0+)', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<p><?php esc_html_e( 'When the user changes a filter, every range slider on the page re-resolves its bounds against the new filter context — but EXCLUDING the slider\'s own clause, so a slider can always widen back from a narrow selection.', 'jsf-query-builder-etch-bridge' ); ?></p>
+					<p class="description"><?php esc_html_e( 'No configuration required. Works automatically on JSF 3.8.0+ when the range filter targets a CMT field.', 'jsf-query-builder-etch-bridge' ); ?></p>
+
+					<h3><?php esc_html_e( 'Opt-out filter', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<pre><code>add_filter( 'jqbeb_range_cmt_override_enabled', '__return_false' );</code></pre>
+				</div>
+			</details>
+
+			<details class="jqbeb-card">
+				<summary><h2><?php esc_html_e( 'Empty results state — author a custom message in Etch', 'jsf-query-builder-etch-bridge' ); ?></h2></summary>
+				<div class="jqbeb-card-body">
+					<p><?php esc_html_e( 'When an AJAX filter pass yields zero results, the bridge clears the loop wrapper and exposes two CSS hooks so the empty state can be styled or replaced with author-defined Etch content. No PHP needed.', 'jsf-query-builder-etch-bridge' ); ?></p>
+
+					<h3>1. <?php esc_html_e( 'CSS-only — quick text via', 'jsf-query-builder-etch-bridge' ); ?> <code>::before</code></h3>
+					<p><?php esc_html_e( 'The bridge adds the class', 'jsf-query-builder-etch-bridge' ); ?> <code>is-empty</code> <?php esc_html_e( 'to', 'jsf-query-builder-etch-bridge' ); ?> <code>.jsf-etch-loop</code> <?php esc_html_e( 'whenever it has zero rendered children. Drop a one-liner into your theme CSS:', 'jsf-query-builder-etch-bridge' ); ?></p>
+					<pre><code>.jsf-etch-loop.is-empty::before {
+    content: "<?php esc_html_e( 'No vehicles match these filters.', 'jsf-query-builder-etch-bridge' ); ?>";
+    display: block;
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-muted);
+}</code></pre>
+
+					<h3>2. <?php esc_html_e( 'Full Etch element — heading, card, CTA, anything', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<p><?php esc_html_e( 'In the Etch builder, drop ANY element (a Container, a card, a Group with a heading + paragraph + button, a "Request a vehicle alert" call-to-action, …) anywhere in your layout. Recommended placement: as a sibling of the loop wrapper, OR inside the same parent container.', 'jsf-query-builder-etch-bridge' ); ?></p>
+					<p><?php esc_html_e( 'Add the CSS class', 'jsf-query-builder-etch-bridge' ); ?> <code>jsf-etch-empty-state</code> <?php esc_html_e( 'to that element.', 'jsf-query-builder-etch-bridge' ); ?></p>
+					<p><?php esc_html_e( 'It\'s hidden by default (via injected', 'jsf-query-builder-etch-bridge' ); ?> <code>display: none !important</code><?php esc_html_e( ') and reveals itself when the paired loop has zero results — the bridge\'s frontend script flips an', 'jsf-query-builder-etch-bridge' ); ?> <code>is-active</code> <?php esc_html_e( 'class on it.', 'jsf-query-builder-etch-bridge' ); ?></p>
+
+					<h3><?php esc_html_e( 'Multi-loop pages — explicit pairing', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<p><?php esc_html_e( 'When several loops share a page each may want its own empty-state. Add a', 'jsf-query-builder-etch-bridge' ); ?> <code>data-for-query-id</code> <?php esc_html_e( 'attribute matching the loop\'s', 'jsf-query-builder-etch-bridge' ); ?> <code>jsf-etch-q-{slug}</code> <?php esc_html_e( 'class:', 'jsf-query-builder-etch-bridge' ); ?></p>
+					<pre><code>&lt;ul class="jsf-etch-loop jsf-etch-q-cars"&gt;…&lt;/ul&gt;
+&lt;div class="jsf-etch-empty-state" data-for-query-id="cars"&gt;
+    <?php esc_html_e( '…your custom empty-state markup…', 'jsf-query-builder-etch-bridge' ); ?>
+&lt;/div&gt;</code></pre>
+					<p class="description"><?php esc_html_e( 'Without an explicit', 'jsf-query-builder-etch-bridge' ); ?> <code>data-for-query-id</code><?php esc_html_e( ', the bridge pairs the empty-state with the nearest', 'jsf-query-builder-etch-bridge' ); ?> <code>.jsf-etch-loop</code> <?php esc_html_e( 'ancestor walk — empty-state elements that sit inside another loop wrapper are explicitly excluded so multi-loop pages don\'t cross-show.', 'jsf-query-builder-etch-bridge' ); ?></p>
+
+					<h3><?php esc_html_e( 'How it works', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<ul>
+						<li><?php esc_html_e( 'A', 'jsf-query-builder-etch-bridge' ); ?> <code>MutationObserver</code> <?php esc_html_e( 'watches each loop wrapper for child mutations. AJAX-driven inner replaces, popups, lazy-loaded sections — all sync correctly.', 'jsf-query-builder-etch-bridge' ); ?></li>
+						<li><?php esc_html_e( 'HTML comments and whitespace inside the wrapper don\'t count as content. The', 'jsf-query-builder-etch-bridge' ); ?> <code>&lt;!--jqbeb:empty-results--&gt;</code> <?php esc_html_e( 'sentinel that ensures JSF re-renders the wrapper on 0-result AJAX is invisible to this check.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					</ul>
+
+					<h3><?php esc_html_e( 'Server-side override (advanced)', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<p><?php esc_html_e( 'Sites that want to inject dynamic content per-request (e.g. localised text from the active locale, a CTA tied to current filter values) can replace the sentinel comment via PHP:', 'jsf-query-builder-etch-bridge' ); ?></p>
+					<pre><code>add_filter( 'jqbeb_empty_results_payload', function ( $sentinel, $inner ) {
+    return '&lt;div class="my-no-results"&gt;<?php esc_html_e( 'Sorry, nothing matches.', 'jsf-query-builder-etch-bridge' ); ?>&lt;/div&gt;';
+}, 10, 2 );</code></pre>
+				</div>
+			</details>
 		</div>
 		<?php
 	}

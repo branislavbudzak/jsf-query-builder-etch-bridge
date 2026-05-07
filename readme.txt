@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.0.4
+Stable tag: 1.1.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -55,9 +55,13 @@ Each bridge runs on its own. Use either, both, or none.
 
 == Changelog ==
 
-= 1.0.4 =
-* Fix: AJAX filter changes that yield zero results no longer leave the previous result set in the DOM. When the merged WP_Query had 0 matching posts, the bridge correctly returned an empty `content` field but JSF's frontend interpreted it as "no update — leave the wrapper alone", so the user kept seeing the previous filter pass's cards (or the initial all-results view) despite `found_posts === 0`. Bridge now substitutes a sentinel `<!--jqbeb:empty-results-->` comment when the extracted wrapper inner is whitespace + comments only, so JSF's replace path runs and the wrapper visibly clears.
-* New filter: `apply_filters( 'jqbeb_empty_results_payload', '<!--jqbeb:empty-results-->', $inner )` — swap the sentinel for a styled `<div class="…">No vehicles match your filters.</div>` placeholder if you want a visible empty-state UI.
+= 1.1.0 =
+* Feature: author-controlled empty-results state via Etch. Drop any Etch element (heading, card, CTA, "request a vehicle alert" form, dynamic-data block, …) on the page with class `jsf-etch-empty-state` and the bridge auto-shows it whenever the paired loop wrapper has zero rendered children. Hidden by default via injected `display:none !important`; revealed by toggling `is-active`. CSS-only fallback: site CSS can target `.jsf-etch-loop.is-empty::before { content: "…"; }` for a one-line no-results message without any author markup.
+* Pairing — by default, an empty-state element pairs with the nearest `.jsf-etch-loop` ancestor walk (descendants of OTHER loop wrappers are explicitly excluded so multi-loop pages don't cross-show). Multi-loop pages with separate empty states use `data-for-query-id="<slug>"` to scope each empty-state to its `jsf-etch-q-<slug>` wrapper.
+* A MutationObserver watches per-loop child mutations (AJAX-driven inner replace) AND the body for new loops added via popups / lazy-loaded sections, so the toggle stays correct on dynamic content.
+* Fix (companion to the empty-state UX): AJAX filter changes that yield zero results no longer leave the previous result set in the DOM. JSF's frontend defensively interpreted the bridge's empty `content` field as "no update — leave the wrapper alone", so users kept seeing the previous filter pass's cards (or the initial all-results view) despite `found_posts === 0`. Bridge now substitutes a sentinel `<!--jqbeb:empty-results-->` comment when the extracted wrapper inner is whitespace + comments only, so JSF's replace path runs and the wrapper visibly clears.
+* New filter: `apply_filters( 'jqbeb_empty_results_payload', '<!--jqbeb:empty-results-->', $inner )` — for sites that prefer a server-rendered empty-state (e.g. localised text from the active locale, dynamic-data tied to filter values) substitute their own HTML instead of using the JS-toggled `.jsf-etch-empty-state` Etch element approach.
+* Settings → JSF Etch Bridge admin page picks up a new "Empty results state" section in the JSF tab with full setup instructions and CSS examples.
 
 = 1.0.3 =
 * Fix: JSF Range filter live recalculation (added in JSF 3.8.0) now works on the bridge. When other filters change, JSF expects each provider's AJAX response to include `dynamic_range[<query_var>] = { min, max }` so it can call `updateRangeBounds()` on each slider; Crocoblock-native providers populate this, our `etch-loop` provider did not, so range sliders previously kept their initial page-load bounds even after another filter narrowed the result set.
