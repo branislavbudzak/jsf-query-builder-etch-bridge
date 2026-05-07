@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+- **User-authorable empty-results state via Etch.** v1.0.4 fixed the DOM-not-clearing bug but the resulting empty wrapper had no visible feedback (just the `<!--jqbeb:empty-results-->` sentinel). The bridge now ships `assets/js/empty-state.js` that flips two CSS hooks based on whether each loop wrapper has any rendered children:
+  - **`is-empty` on the `.jsf-etch-loop` wrapper** — site CSS can target this directly without any author markup, e.g. `.jsf-etch-loop.is-empty::before { content: "No vehicles match." }`.
+  - **`is-active` on `.jsf-etch-empty-state` Etch elements** — the user adds an Etch element (heading + paragraph, a card, a "request a vehicle alert" CTA, anything) anywhere on the page with class `jsf-etch-empty-state`. It's hidden by default via injected CSS (`display:none !important`) and revealed when the paired loop has zero results.
+- Pairing rules: by default, an empty-state element pairs with the nearest `.jsf-etch-loop` ancestor in DOM. Multi-loop pages must use `data-for-query-id="<slug>"` to scope each empty-state to its `jsf-etch-q-<slug>` wrapper.
+- A `MutationObserver` watches both the per-loop child mutations (AJAX-driven inner replace) AND the body for new loops added via popups / lazy-loaded sections, so the toggle stays correct on dynamic content.
+
 ## 1.0.4
 
 ### Fixed

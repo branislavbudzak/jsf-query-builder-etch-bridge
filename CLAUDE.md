@@ -124,6 +124,7 @@ includes/
   class-admin-page.php                  Settings → JSF Etch Bridge (English docs, conditional sections)
 assets/js/count.js                      [jsf_etch_count] live updater (subscribes to JSF event bus)
 assets/js/range-fill.js                 Page-load fill for JSF Range filter editable text inputs. Bridges JSF 3.8.0.1+ async dynamic-range pattern (data-dynamic-range-pending + clearPendingDynamicRangeDisplay) by calling `updateRangeBounds()` directly on `jet-smart-filters/inited` for our `etch-loop` provider; legacy `input`-event dispatch path retained for JSF 3.7.x.
+assets/js/empty-state.js                Toggles `is-empty` on each `.jsf-etch-loop` wrapper and `is-active` on every `.jsf-etch-empty-state` Etch element paired with the wrapper, so users can author a custom empty-state directly in Etch (text, card, image, anything). Default-hides empty-state elements via injected CSS until JS reveals them. Pairing: `data-for-query-id="<slug>"` on multi-loop pages, otherwise nearest `.jsf-etch-loop` ancestor walk.
 ```
 
 ## Filterable behaviour

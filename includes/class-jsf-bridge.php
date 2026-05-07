@@ -385,6 +385,18 @@ class JSF_Bridge {
 			$this->asset_version( 'assets/js/range-fill.js' ),
 			true
 		);
+		// Empty-results state toggle — flips `is-empty` on each loop wrapper
+		// and `is-active` on `.jsf-etch-empty-state` Etch elements paired
+		// with the wrapper, so users can author a custom empty-state in
+		// Etch (text, card, image, anything) without writing JS or CSS.
+		// See assets/js/empty-state.js for the pairing rules.
+		wp_enqueue_script(
+			'jqbeb-empty-state',
+			JQBEB_URL . 'assets/js/empty-state.js',
+			[],
+			$this->asset_version( 'assets/js/empty-state.js' ),
+			true
+		);
 	}
 
 	/**
