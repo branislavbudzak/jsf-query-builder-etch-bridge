@@ -207,6 +207,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				// emit branch in on_render_block is gated on is_loopback()
 				// which is false in the direct path).
 				$inner = preg_replace( '/<!--JQBEB-PROPS:[A-Za-z0-9+\/=]+-->/', '', $inner );
+				$inner = $this->ensure_non_empty_inner( $inner );
 
 				echo $inner; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 
@@ -281,6 +282,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 
 		// Strip props comment markers from inner HTML before sending to client.
 		$inner = preg_replace( '/<!--JQBEB-PROPS:[A-Za-z0-9+\/=]+-->/', '', $inner );
+		$inner = $this->ensure_non_empty_inner( $inner );
 
 		if ( $cache_enabled ) {
 			set_transient( $loopback_cache_key, [
@@ -292,6 +294,41 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		echo $inner; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 
 		$this->update_jsf_props( $query_id, $page_value, $loopback_props );
+	}
+
+	/**
+	 * Guarantee a non-empty payload for JSF's AJAX `content` field.
+	 *
+	 * When the filtered loop yields zero posts, Etch renders the wrapper
+	 * with no children — `extract_wrapper_inner_html` correctly returns an
+	 * empty string. JSF's frontend then receives `{ "content": "" }` and,
+	 * defensively, leaves the existing wrapper DOM untouched (interpreting
+	 * empty as "no update"), so the user keeps seeing the previous page's
+	 * cards even though `pagination.found_posts === 0`.
+	 *
+	 * Emit a tiny sentinel HTML comment when the inner is effectively
+	 * empty so JSF's replace path runs and the wrapper visibly clears.
+	 * The comment is invisible in DOM and stable across browsers; sites
+	 * that want a styled "no results" message can listen for the JSF
+	 * `jet/smart-filters/content-rendered` event (or check the wrapper's
+	 * own emptiness) and inject their own UI.
+	 *
+	 * Filterable via `jqbeb_empty_results_payload` so site code can
+	 * substitute a richer empty-state placeholder.
+	 */
+	private function ensure_non_empty_inner( string $inner ): string {
+		// Strip whitespace + leftover comments to detect "effectively empty".
+		$probe = preg_replace( '/<!--.*?-->/s', '', $inner );
+		$probe = trim( (string) $probe );
+		if ( $probe !== '' ) {
+			return $inner;
+		}
+		$payload = (string) apply_filters(
+			'jqbeb_empty_results_payload',
+			'<!--jqbeb:empty-results-->',
+			$inner
+		);
+		return $payload !== '' ? $payload : '<!--jqbeb:empty-results-->';
 	}
 
 	/**

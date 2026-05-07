@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.0.3
+Stable tag: 1.0.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,10 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.0.4 =
+* Fix: AJAX filter changes that yield zero results no longer leave the previous result set in the DOM. When the merged WP_Query had 0 matching posts, the bridge correctly returned an empty `content` field but JSF's frontend interpreted it as "no update — leave the wrapper alone", so the user kept seeing the previous filter pass's cards (or the initial all-results view) despite `found_posts === 0`. Bridge now substitutes a sentinel `<!--jqbeb:empty-results-->` comment when the extracted wrapper inner is whitespace + comments only, so JSF's replace path runs and the wrapper visibly clears.
+* New filter: `apply_filters( 'jqbeb_empty_results_payload', '<!--jqbeb:empty-results-->', $inner )` — swap the sentinel for a styled `<div class="…">No vehicles match your filters.</div>` placeholder if you want a visible empty-state UI.
 
 = 1.0.3 =
 * Fix: JSF Range filter live recalculation (added in JSF 3.8.0) now works on the bridge. When other filters change, JSF expects each provider's AJAX response to include `dynamic_range[<query_var>] = { min, max }` so it can call `updateRangeBounds()` on each slider; Crocoblock-native providers populate this, our `etch-loop` provider did not, so range sliders previously kept their initial page-load bounds even after another filter narrowed the result set.

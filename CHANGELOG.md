@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.0.4
+
+### Fixed
+- **AJAX filter changes that yield zero results no longer leave the previous result set in the DOM.** When the merged WP_Query had 0 matching posts, Etch's loop block correctly rendered a wrapper with no children, `extract_wrapper_inner_html` correctly returned an empty string, and `JSF_Provider::ajax_get_content` correctly echoed nothing — so JSF received `{ "content": "", "pagination": { "found_posts": 0, … } }` and its frontend, defensively, interpreted the empty `content` as "no update — leave the wrapper alone". Result: the user kept seeing the previous filter pass's cards (or, if the slider was being widened back, the initial all-results view) despite `found_posts === 0`. Bridge now post-processes the extracted inner via a new `ensure_non_empty_inner()` helper: if the inner is whitespace + comments only, it substitutes a sentinel `<!--jqbeb:empty-results-->` comment so JSF's replace path runs and the wrapper visibly clears. New filter `apply_filters( 'jqbeb_empty_results_payload', '<!--jqbeb:empty-results-->', $inner )` lets sites swap the sentinel for a styled `<div class="my-empty-state">No vehicles match your filters.</div>` placeholder.
+
 ## 1.0.3
 
 ### Fixed

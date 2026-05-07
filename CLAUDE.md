@@ -131,6 +131,7 @@ assets/js/range-fill.js                 Page-load fill for JSF Range filter edit
 - `apply_filters('jqbeb_loopback_sslverify', false)` — set to `true` (or `__return_true`) on production for proper SSL verification on the JSF AJAX self-loopback.
 - `apply_filters('jqbeb_loopback_cache_enabled', true, $cache_user_id)` — disable the 60-second rendered-HTML loopback cache (return `false`) on sites with anonymous personalized content (cart, geo, A/B). Cache is per-user-ID; safe for typical role-/login-/membership-gated content.
 - `apply_filters('jqbeb_range_cmt_override_enabled', true, $args, $instance)` — opt-out of the v1.0.2 JSF Range filter min/max recompute against JE CMT tables. Return `false` to fall back to JSF's default `wp_postmeta` query (which yields empty bounds for CMT fields).
+- `apply_filters('jqbeb_empty_results_payload', '<!--jqbeb:empty-results-->', $inner)` — substitute the sentinel emitted (v1.0.4+) when the AJAX-rendered loop has zero results. JSF's frontend treats `content === ''` as "no update", leaving the previous result set in the DOM; the sentinel forces a replace so the wrapper visibly clears. Replace with a styled `<div class="...">No vehicles match.</div>` placeholder for a visible empty-state UI.
 
 ## Versioning workflow
 
