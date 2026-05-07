@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.0.2
+Stable tag: 1.0.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,12 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.0.3 =
+* Fix: JSF Range filter live recalculation (added in JSF 3.8.0) now works on the bridge. When other filters change, JSF expects each provider's AJAX response to include `dynamic_range[<query_var>] = { min, max }` so it can call `updateRangeBounds()` on each slider; Crocoblock-native providers populate this, our `etch-loop` provider did not, so range sliders previously kept their initial page-load bounds even after another filter narrowed the result set.
+* Bridge now hooks `jet-smart-filters/render/ajax/data` and, for every var requested in `dynamic_range[…][]`, builds a WP_Query mirroring the current filter context but EXCLUDING the var's own `_meta_query_<var>` clause (otherwise the slider would collapse to the user's current selection and become impossible to widen), runs the query for IDs only, and feeds them into the existing CMT MIN/MAX SQL helper from 1.0.2.
+* Reads the var list from the **raw POST body** (`php://input`) rather than `$_REQUEST`. JSF's bucket-key shape `dynamic_range[[object Object],apply_min_max_callback][]=<var>` cannot be parsed by PHP's `parse_str` (the literal `[`/`]`/`,`/space inside the key collapses the expected nested array down to a single `array[ '[object Object' => '<last var>' ]`, silently overwriting every var except the last) — direct body walk recovers all vars.
+* Provider-agnostic gate (data-shape, not `content_provider`); reuses the existing `jqbeb_range_cmt_override_enabled` opt-out filter from 1.0.2.
 
 = 1.0.2 =
 * Fix: JSF Range filter dynamic min/max for JE post types using Custom Meta Tables (CMT / Custom Storage). Sliders showed empty bounds on page load — both with JSF's built-in `jet_smart_filters_meta_values` callback (queries `wp_postmeta` which holds nothing for CMT fields) AND with JE's native `jet_engine_custom_storage_post_{slug}` callback (returns null min/max when the column has only NULL values, which JSF drops via `isset()` against NULL falling back to manual `_source_min` / `_source_max`). Bridge now hooks `jet-smart-filters/filter-instance/args` priority 20 and recomputes min/max from the CMT table when the filter's meta_key is a registered CMT field, scoped by the storage's `object_slug` post_type and the `jet-smart-filters/dynamic-min-max/search-statuses` filter (default `['publish']`), with step-rounding mirroring JSF's native `max_value_for_current_step`. Comma-separated multi-key filters are aggregated across columns. Per-request memoisation by filter ID. Provider-agnostic — gates on data-shape (CMT field membership), not `content_provider`. Opt-out via `apply_filters( 'jqbeb_range_cmt_override_enabled', true, $args, $instance )`. Manual min/max (`_source_callback = 'none'`), WooCommerce price, term meta, and user meta callbacks are untouched.

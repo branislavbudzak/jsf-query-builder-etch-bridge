@@ -97,6 +97,15 @@ class JSF_Bridge {
 		// NULL for CMT-stored fields, leaving the slider with empty bounds.
 		add_filter( 'jet-smart-filters/filter-instance/args', [ $this, 'override_range_min_max_for_cmt' ], 20, 2 );
 
+		// Live `dynamic_range` recompute on AJAX filter changes. JSF 3.8.0+
+		// pushes a `dynamic_range[type][]: [vars]` payload in every AJAX
+		// request and expects the provider's response to include
+		// `dynamic_range[var]: {min, max}` so the slider can update its bounds
+		// based on the current filter context. Crocoblock-native providers
+		// hook this; our `etch-loop` provider would otherwise leave the field
+		// missing, so JSF can't update slider bounds when other filters change.
+		add_filter( 'jet-smart-filters/render/ajax/data', [ $this, 'add_dynamic_range_to_ajax_response' ] );
+
 		add_action( 'jet-smart-filters/providers/register', [ $this, 'register_provider' ] );
 	}
 
@@ -743,6 +752,9 @@ class JSF_Bridge {
 	 * For each meta_key, find which JE CMT storages register a column of
 	 * that name and return the (table, column, post_type) tuples.
 	 *
+	 * Public — also called from JSF_Provider for live `dynamic_range`
+	 * recomputation on AJAX filter changes.
+	 *
 	 * @param string[] $meta_keys
 	 * @param ?string  $restrict_to_slug When non-null (JE-native callback case),
 	 *                                   only the storage whose `object_slug`
@@ -751,7 +763,7 @@ class JSF_Bridge {
 	 *                                   we should not silently widen the lookup.
 	 * @return array<int, array{table: string, column: string, post_type: string}>
 	 */
-	private function find_cmt_targets_for_meta_keys( array $meta_keys, ?string $restrict_to_slug = null ): array {
+	public function find_cmt_targets_for_meta_keys( array $meta_keys, ?string $restrict_to_slug = null ): array {
 		if ( ! class_exists( '\Jet_Engine\CPT\Custom_Tables\Manager' ) ) {
 			return [];
 		}
@@ -810,10 +822,21 @@ class JSF_Bridge {
 	 * Restricting by p.post_type keeps results scoped when two CMT
 	 * storages share a column name (rare but possible).
 	 *
+	 * Public — also called from JSF_Provider for live `dynamic_range`
+	 * recomputation on AJAX filter changes (with `$restrict_to_object_ids`
+	 * non-null to scope to the post-IDs that match the current filter
+	 * context minus the slider's own clause).
+	 *
 	 * @param array<int, array{table: string, column: string, post_type: string}> $targets
+	 * @param ?int[] $restrict_to_object_ids When non-null, additionally
+	 *                                       restricts the SQL to
+	 *                                       `t.object_ID IN (...)` — used by
+	 *                                       the live recalc path to scope
+	 *                                       bounds to the current filtered
+	 *                                       result set.
 	 * @return array{0: ?float, 1: ?float}
 	 */
-	private function compute_cmt_range_min_max( array $targets ): array {
+	public function compute_cmt_range_min_max( array $targets, ?array $restrict_to_object_ids = null ): array {
 		global $wpdb;
 
 		$statuses = apply_filters( 'jet-smart-filters/dynamic-min-max/search-statuses', [ 'publish' ] );
@@ -822,6 +845,21 @@ class JSF_Bridge {
 			$statuses = [ 'publish' ];
 		}
 		$status_placeholders = implode( ',', array_fill( 0, count( $statuses ), '%s' ) );
+
+		// Live-recalc path: caller has a result-set of post IDs from the
+		// current filter context. Empty input → no rows match → null bounds.
+		$ids_in_clause = '';
+		if ( $restrict_to_object_ids !== null ) {
+			$clean_ids = array_values( array_filter(
+				array_map( 'absint', $restrict_to_object_ids ),
+				fn ( $id ) => $id > 0
+			) );
+			if ( empty( $clean_ids ) ) {
+				return [ null, null ];
+			}
+			// absint guarantees integer-only — safe to interpolate as IN list.
+			$ids_in_clause = ' AND t.object_ID IN (' . implode( ',', $clean_ids ) . ')';
+		}
 
 		$min = null;
 		$max = null;
@@ -837,7 +875,8 @@ class JSF_Bridge {
 			        WHERE t.`{$t['column']}` IS NOT NULL
 			          AND t.`{$t['column']}` <> ''
 			          AND p.post_type    = %s
-			          AND p.post_status IN ({$status_placeholders})";
+			          AND p.post_status IN ({$status_placeholders})"
+			        . $ids_in_clause;
 
 			$prepared = $wpdb->prepare(
 				$sql,
@@ -858,6 +897,334 @@ class JSF_Bridge {
 		}
 
 		return [ $min, $max ];
+	}
+
+	/* -------------------- LIVE RANGE RECALC (AJAX) -------------------- */
+
+	/**
+	 * Hooked on `jet-smart-filters/render/ajax/data` (JSF render.php:340) —
+	 * fires after the provider's content has been rendered, just before
+	 * `wp_send_json( $args )`.
+	 *
+	 * JSF 3.8.0+ JS subscribes to `request/ajax-data` and pushes a
+	 * `dynamic_range[type][]: <queryVar>` entry into the AJAX request for
+	 * every range filter on the page that has `data-dynamic-range-pending`.
+	 * After the response comes back, JSF reads `response.dynamic_range[var]`
+	 * for each range filter and calls `updateRangeBounds({min, max})` to
+	 * narrow the slider to the bounds available within the current filter
+	 * context. Crocoblock's own providers populate this server-side; our
+	 * `etch-loop` provider has to do it explicitly.
+	 *
+	 * For each requested var:
+	 *   1. Resolve CMT (table, column, post_type) targets via the same path
+	 *      as the page-load override (`find_cmt_targets_for_meta_keys`).
+	 *   2. Build a WP_Query that mirrors the current filter context but
+	 *      EXCLUDES this var's own clause — otherwise the slider's bounds
+	 *      would collapse to the user's current selection and they could
+	 *      never widen it again.
+	 *   3. Run the query for IDs only.
+	 *   4. Run our CMT MIN/MAX SQL constrained by `t.object_ID IN (ids)`.
+	 *   5. Inject `[$var => ['min' => …, 'max' => …]]` into the response.
+	 *
+	 * @param array<string,mixed> $args JSF response args (will be JSON-encoded).
+	 * @return array<string,mixed>
+	 */
+	public function add_dynamic_range_to_ajax_response( $args ) {
+		if ( ! is_array( $args ) ) {
+			return $args;
+		}
+
+		// Only fire for our provider — JSF dispatches the same hook for every
+		// provider's AJAX response, and other providers may handle dynamic_range
+		// themselves. Reading the request directly avoids a JSF API roundtrip.
+		$provider = isset( $_REQUEST['provider'] ) ? (string) $_REQUEST['provider'] : '';
+		if ( $provider === '' || strpos( $provider, 'etch-loop' ) !== 0 ) {
+			return $args;
+		}
+
+		// JSF JS posts the var list under a key like
+		//   dynamic_range[[object Object],apply_min_max_callback][]=price_sale_gross
+		//   dynamic_range[[object Object],apply_min_max_callback][]=mileage_km
+		// because the JS uses the parsed `data-dynamic-range` JSON value
+		// (a callable `[Query, "method"]`) as the bucket key — fine in JS
+		// (object key gets coerced to a string), CATASTROPHIC in PHP:
+		// `parse_str` cannot match the nested literal `[`/`]` and collapses
+		// the whole `array<string, array<string>>` down to a single
+		// `array[ '[object Object' => '<last var>' ]` — every var except
+		// the LAST one is silently overwritten. Confirmed empirically.
+		//
+		// Workaround: read the raw POST body via `php://input` and walk
+		// the `&`-delimited pairs ourselves, picking the value of every
+		// key that starts with `dynamic_range`. WordPress doesn't consume
+		// php://input during admin-ajax (it reads $_POST), so the stream
+		// is intact here.
+		$vars = $this->extract_dynamic_range_vars_from_raw_request();
+		if ( empty( $vars ) ) {
+			return $args;
+		}
+
+		// Per-site / per-request escape valve. Reuse the same opt-out filter
+		// used by the page-load override so users have one knob for both.
+		if ( ! apply_filters( 'jqbeb_range_cmt_override_enabled', true, $args, null ) ) {
+			return $args;
+		}
+
+		$dynamic_range_out = [];
+		foreach ( $vars as $var ) {
+			$bounds = $this->compute_dynamic_range_for_var_in_context( $var );
+			if ( $bounds === null ) {
+				continue;
+			}
+			$dynamic_range_out[ $var ] = [
+				'min' => $bounds[0],
+				'max' => $bounds[1],
+			];
+		}
+
+		if ( ! empty( $dynamic_range_out ) ) {
+			$args['dynamic_range'] = $dynamic_range_out;
+		}
+
+		return $args;
+	}
+
+	/**
+	 * Extract every range-filter `query_var` carried in the AJAX request's
+	 * `dynamic_range[…][]=<var>` payload. Reads the raw POST body (or
+	 * QUERY_STRING fallback) directly because PHP's `parse_str` cannot
+	 * handle JSF's malformed bucket-key shape — see the long comment in
+	 * `add_dynamic_range_to_ajax_response()`.
+	 *
+	 * @return string[] Deduplicated, non-empty var names in arrival order.
+	 */
+	private function extract_dynamic_range_vars_from_raw_request(): array {
+		$body = '';
+		if ( ! empty( $_SERVER['REQUEST_METHOD'] ) && strtoupper( (string) $_SERVER['REQUEST_METHOD'] ) === 'POST' ) {
+			$body = (string) file_get_contents( 'php://input' );
+		}
+		if ( $body === '' && ! empty( $_SERVER['QUERY_STRING'] ) ) {
+			$body = (string) $_SERVER['QUERY_STRING'];
+		}
+		if ( $body === '' ) {
+			return [];
+		}
+
+		$out = [];
+		foreach ( explode( '&', $body ) as $pair ) {
+			$eq = strpos( $pair, '=' );
+			if ( $eq === false ) {
+				continue;
+			}
+			$raw_key = substr( $pair, 0, $eq );
+			$raw_val = substr( $pair, $eq + 1 );
+
+			// urldecode the key to test the prefix correctly. The value is
+			// always a single var name like `price_sale_gross` — no nested
+			// brackets — so a plain urldecode is enough.
+			$decoded_key = urldecode( $raw_key );
+			if ( strpos( $decoded_key, 'dynamic_range' ) !== 0 ) {
+				continue;
+			}
+			$val = trim( urldecode( $raw_val ) );
+			if ( $val === '' ) {
+				continue;
+			}
+			$out[] = $val;
+		}
+
+		return array_values( array_unique( $out ) );
+	}
+
+	/**
+	 * Resolve {min, max} for a single range filter `query_var` against the
+	 * CURRENT filter context, EXCLUDING that var's own clause from the
+	 * context. Returns `null` if the var has no CMT target, the context
+	 * matches no posts, or the SQL aggregate yields NULL on both sides.
+	 *
+	 * @return array{0: float, 1: float}|null
+	 */
+	private function compute_dynamic_range_for_var_in_context( string $var ): ?array {
+		// JSF accepts comma-separated meta keys for range. Pipe ('|') is the
+		// query_var_suffix separator — do NOT split on it.
+		$meta_keys = array_filter( array_map( 'trim', explode( ',', $var ) ) );
+		if ( empty( $meta_keys ) ) {
+			return null;
+		}
+
+		$targets = $this->find_cmt_targets_for_meta_keys( $meta_keys );
+		if ( empty( $targets ) ) {
+			return null;
+		}
+
+		$context_args = $this->build_recalc_context_args_excluding_var( $var );
+		if ( ! is_array( $context_args ) || empty( $context_args['post_type'] ) ) {
+			return null;
+		}
+
+		// IDs-only query — we just need the result set to constrain the
+		// MIN/MAX SQL. -1 fetches the full filtered set; the CMT MIN/MAX is
+		// then a single aggregate over those IDs.
+		$context_args['fields']         = 'ids';
+		$context_args['posts_per_page'] = -1;
+		$context_args['no_found_rows']  = true;
+
+		// Tag the recalc query with a sentinel so any debug code or future
+		// pre_get_posts handler can identify it. The query itself doesn't
+		// hit our existing JSF/JE merge hooks — those gate on a `jet_smart_filters`
+		// query flag that we deliberately stripped in build_recalc_context_args.
+		$context_args['_jqbeb_dynamic_range_recalc'] = $var;
+
+		$wp_query = new \WP_Query( $context_args );
+		$ids      = is_array( $wp_query->posts ) ? array_map( 'intval', $wp_query->posts ) : [];
+
+		[ $min, $max ] = $this->compute_cmt_range_min_max( $targets, $ids );
+		if ( $min === null || $max === null ) {
+			return null;
+		}
+
+		return [ (float) $min, (float) $max ];
+	}
+
+	/**
+	 * Reconstruct WP_Query args mirroring the current AJAX filter context
+	 * EXCLUDING any clause whose query var matches `$exclude_var`.
+	 *
+	 * Why a custom merge instead of JSF's `get_query_args()`: JSF does a
+	 * shallow `array_merge( $defaults, $_query )` which means the user's
+	 * tax_query / meta_query clauses OVERWRITE the loop's JE-base
+	 * tax_query / meta_query (post-type listing-status / availability_status
+	 * etc.) — so any recalc would silently widen results past their JE-base
+	 * scope. Mirrors `JSF_Provider::merge_jsf_into_query`'s deep-merge for
+	 * the three multi-clause args.
+	 *
+	 * Strategy:
+	 *   1. Mutate `$_REQUEST['query']` to drop self-var keys.
+	 *   2. Re-parse via `get_query_from_request()` — populates the public
+	 *      `jet_smart_filters()->query->_query` with parsed filter clauses
+	 *      (no defaults).
+	 *   3. Snapshot `_query` directly (it's public).
+	 *   4. Restore `$_REQUEST` and re-parse so JSF state is intact for any
+	 *      code after this hook.
+	 *   5. Compose final args = defaults + parsed-clauses (deep-merged on
+	 *      meta/tax/date_query).
+	 *
+	 * Self-exclusion only strips `_meta_query_{var}` / `_meta_query_{var}|{suffix}`
+	 * keys — tax / date / sort keys can't reference a meta query_var.
+	 *
+	 * Returned args have JSF's own tag stripped so a fresh WP_Query with
+	 * these args won't re-trigger `apply_jsf_to_tagged_query`.
+	 *
+	 * @return array<string,mixed>|null
+	 */
+	private function build_recalc_context_args_excluding_var( string $exclude_var ): ?array {
+		if ( ! function_exists( 'jet_smart_filters' ) ) {
+			return null;
+		}
+
+		$defaults = $_REQUEST['defaults'] ?? [];
+		if ( ! is_array( $defaults ) ) {
+			$defaults = [];
+		}
+
+		$saved_request_query = $_REQUEST['query'] ?? null;
+		$filtered_query      = is_array( $saved_request_query ) ? $saved_request_query : [];
+		foreach ( $filtered_query as $key => $_ ) {
+			if ( $this->request_query_key_targets_var( (string) $key, $exclude_var ) ) {
+				unset( $filtered_query[ $key ] );
+			}
+		}
+		$_REQUEST['query'] = $filtered_query;
+
+		try {
+			jet_smart_filters()->query->get_query_from_request();
+			$parsed = is_array( jet_smart_filters()->query->_query )
+				? jet_smart_filters()->query->_query
+				: [];
+		} finally {
+			if ( $saved_request_query === null ) {
+				unset( $_REQUEST['query'] );
+			} else {
+				$_REQUEST['query'] = $saved_request_query;
+			}
+			// Re-parse with original to restore JSF's internal state.
+			jet_smart_filters()->query->get_query_from_request();
+		}
+
+		// Compose: defaults form the base; parsed clauses layer on top
+		// with per-clause deep merge for the three multi-clause args.
+		$final = [];
+		foreach ( [ 'post_type', 'post_status', 'post__in', 'post__not_in' ] as $passthrough ) {
+			if ( isset( $defaults[ $passthrough ] ) ) {
+				$final[ $passthrough ] = $defaults[ $passthrough ];
+			}
+		}
+
+		foreach ( [ 'meta_query', 'tax_query', 'date_query' ] as $multi ) {
+			$base   = ( ! empty( $defaults[ $multi ] ) && is_array( $defaults[ $multi ] ) )
+				? $defaults[ $multi ]
+				: [];
+			$layer  = ( ! empty( $parsed[ $multi ] ) && is_array( $parsed[ $multi ] ) )
+				? $parsed[ $multi ]
+				: [];
+			$merged = $this->merge_query_clauses( $base, $layer );
+			if ( ! empty( $merged ) ) {
+				$final[ $multi ] = $merged;
+			}
+		}
+
+		// Honour search if the JSF parser produced one.
+		if ( ! empty( $parsed['s'] ) ) {
+			$final['s'] = $parsed['s'];
+		}
+
+		return $final;
+	}
+
+	/**
+	 * Combine two `meta_query` / `tax_query` / `date_query`-shaped
+	 * clause arrays AND-merging the clauses, retaining the highest-priority
+	 * relation between them. WP_Query interprets numerically-keyed entries
+	 * as nested clauses with implicit AND.
+	 *
+	 * @param array<int|string, mixed> $base
+	 * @param array<int|string, mixed> $layer
+	 * @return array<int|string, mixed>
+	 */
+	private function merge_query_clauses( array $base, array $layer ): array {
+		$out = [];
+		foreach ( $base as $k => $v ) {
+			if ( $k === 'relation' ) {
+				continue;
+			}
+			$out[] = $v;
+		}
+		foreach ( $layer as $k => $v ) {
+			if ( $k === 'relation' ) {
+				continue;
+			}
+			$out[] = $v;
+		}
+		if ( count( $out ) > 1 ) {
+			$out['relation'] = 'AND';
+		}
+		return $out;
+	}
+
+	/**
+	 * True iff a `$_REQUEST['query']` key targets the given query_var —
+	 * i.e. matches `_meta_query_{var}` or `_meta_query_{var}|{suffix}`.
+	 *
+	 * Tax / date filters can't reference a meta query_var, so we only
+	 * pattern-match against the `_meta_query_` prefix.
+	 */
+	private function request_query_key_targets_var( string $key, string $var ): bool {
+		$prefix = '_meta_query_';
+		if ( strpos( $key, $prefix ) !== 0 ) {
+			return false;
+		}
+		$rest    = substr( $key, strlen( $prefix ) );
+		$key_var = explode( '|', $rest, 2 )[0]; // strip suffix
+		return $key_var === $var;
 	}
 
 	/* -------------------- PROVIDER REGISTRATION -------------------- */

@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.0.3
+
+### Fixed
+- **JSF Range filter live recalculation (added in JSF 3.8.0) now works on the bridge.** When other filters change, JSF posts a `dynamic_range[…][]=<query_var>` payload listing every range filter on the page that should have its bounds re-resolved against the current filter context, and reads `response.dynamic_range[<query_var>] = { min, max }` from each provider's AJAX response to call `updateRangeBounds()` on the slider. Crocoblock-native providers populate this server-side; our `etch-loop` provider previously did not, so range sliders kept their initial page-load bounds even after another filter narrowed the result set. Bridge now hooks `jet-smart-filters/render/ajax/data` and:
+  - Reads the requested vars from the **raw POST body** (not `$_REQUEST`) — JSF's bucket-key shape `dynamic_range[[object Object],apply_min_max_callback][]=<var>` cannot be parsed by PHP's `parse_str` (the literal `[`/`]`/`,`/space inside the bracket-key collapses the expected `array<string, array<string>>` down to a single `array[ '[object Object' => '<last var>' ]`, silently overwriting every var except the last). The bridge walks `php://input` directly to recover all vars.
+  - For each var, builds a WP_Query mirroring the current filter context but EXCLUDING the var's own `_meta_query_<var>` clause — otherwise the slider would collapse to the user's current selection and become impossible to widen.
+  - Runs the query for IDs only and feeds them as `t.object_ID IN (...)` into the existing CMT MIN/MAX SQL helper from 1.0.2.
+  - Injects the result map into the AJAX response.
+- Provider-agnostic gate (data-shape, not `content_provider`); reuses the existing `jqbeb_range_cmt_override_enabled` opt-out filter.
+
+### Notes
+- Comma-separated multi-key range filters are aggregated across columns via the same path as the page-load override.
+- Vars whose CMT column is all-NULL within the current filter context are silently omitted from the response — JSF's JS leaves the slider in its previous state, which is preferable to collapsing to 0/0.
+- Re-uses the public `find_cmt_targets_for_meta_keys()` and `compute_cmt_range_min_max()` helpers exposed in 1.0.2 (latter gained a new `?int[] $restrict_to_object_ids` parameter for the `t.object_ID IN (…)` constraint).
+
 ## 1.0.2
 
 ### Fixed
