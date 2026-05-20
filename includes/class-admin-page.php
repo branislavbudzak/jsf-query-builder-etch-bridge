@@ -100,10 +100,11 @@ class Admin_Page {
 		<div class="jqbeb-tab" id="tab-overview">
 			<div class="jqbeb-card">
 				<h2><?php esc_html_e( 'What this plugin does', 'jsf-query-builder-etch-bridge' ); ?></h2>
-				<p><?php esc_html_e( 'Two independent bridges that drive Etch\'s native Query Loop block from external query systems:', 'jsf-query-builder-etch-bridge' ); ?></p>
+				<p><?php esc_html_e( 'Independent bridges that drive Etch\'s native Query Loop block from external query systems:', 'jsf-query-builder-etch-bridge' ); ?></p>
 				<ol>
 					<li><strong><?php esc_html_e( 'JetSmartFilters bridge', 'jsf-query-builder-etch-bridge' ); ?></strong> — <?php esc_html_e( 'lets JSF filter / pagination / sort blocks drive an Etch Query Loop, with AJAX filtering and per-option indexed counts.', 'jsf-query-builder-etch-bridge' ); ?></li>
 					<li><strong><?php esc_html_e( 'JetEngine Query Builder bridge', 'jsf-query-builder-etch-bridge' ); ?></strong> — <?php esc_html_e( 'lets a JE Query Builder query (Posts, Users, Terms, Merged, SQL, Data Stores) become the data source for an Etch Query Loop.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					<li><strong><?php esc_html_e( 'JE Data Store Button inside Etch loops (v1.2.0+)', 'jsf-query-builder-etch-bridge' ); ?></strong> — <?php esc_html_e( 'drop the JetEngine Data Store Button block into any Etch loop card; each button automatically targets the correct loop item (favourites, recently-viewed, comparison stores, etc.). No wrapper class needed.', 'jsf-query-builder-etch-bridge' ); ?></li>
 				</ol>
 				<p><?php esc_html_e( 'Each bridge runs on its own. Use either, both, or none. Etch is the only hard dependency.', 'jsf-query-builder-etch-bridge' ); ?></p>
 			</div>
@@ -364,6 +365,43 @@ je-etch-loop je-q-partner-listings    <?php esc_html_e( '— Query ID slug', 'js
 						<li><?php esc_html_e( 'Create a JE Query Builder query of type Data Stores Query.', 'jsf-query-builder-etch-bridge' ); ?></li>
 						<li><?php esc_html_e( 'Wrapper:', 'jsf-query-builder-etch-bridge' ); ?> <code>je-etch-loop je-q-{ds-query-id}</code></li>
 					</ol>
+				</div>
+			</details>
+
+			<details class="jqbeb-card" open>
+				<summary><h2><?php esc_html_e( 'Data Store Button inside Etch loops', 'jsf-query-builder-etch-bridge' ); ?> <small>(v1.2.0+)</small></h2></summary>
+				<div class="jqbeb-card-body">
+					<p><?php esc_html_e( 'You can drop the JetEngine Data Store Button block (favourites, recently-viewed, comparison) into any Etch loop card. Each rendered button automatically binds to the correct loop item — no wrapper class needed, no manual configuration.', 'jsf-query-builder-etch-bridge' ); ?></p>
+
+					<h3><?php esc_html_e( 'How to use', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<ol>
+						<li><?php esc_html_e( 'Inside your Etch loop\'s card template, insert the', 'jsf-query-builder-etch-bridge' ); ?> <strong>JetEngine → Data Store Button</strong> <?php esc_html_e( 'block.', 'jsf-query-builder-etch-bridge' ); ?></li>
+						<li><?php esc_html_e( 'Pick the store, label, and icon in the block settings.', 'jsf-query-builder-etch-bridge' ); ?></li>
+						<li><?php esc_html_e( 'Done. Frontend: every card\'s button gets', 'jsf-query-builder-etch-bridge' ); ?> <code>data-post="{loop-item-id}"</code> <?php esc_html_e( 'automatically.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					</ol>
+
+					<h3><?php esc_html_e( 'Why this needs a bridge', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<p><?php esc_html_e( 'The Data Store Button resolves its target via', 'jsf-query-builder-etch-bridge' ); ?> <code>jet_engine()-&gt;listings-&gt;data-&gt;get_current_object()</code><?php esc_html_e( '. JE updates that on the', 'jsf-query-builder-etch-bridge' ); ?> <code>the_post</code> <?php esc_html_e( 'hook, which Etch\'s loop block does NOT fire (Etch uses its own DynamicContextProvider stack instead of', 'jsf-query-builder-etch-bridge' ); ?> <code>setup_postdata()</code><?php esc_html_e( '). Without the bridge, every button on every card binds to the host page\'s ID and clicking any button saves the page to the store instead of the card. JE Listing Grid was unaffected because it runs WP_Query the standard way.', 'jsf-query-builder-etch-bridge' ); ?></p>
+
+					<h3><?php esc_html_e( 'Scope', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<ul>
+						<li><?php esc_html_e( 'Works inside any Etch loop — plain posts loop, the JE Query Builder bridge above, or a JSF-bridged loop.', 'jsf-query-builder-etch-bridge' ); ?></li>
+						<li><?php esc_html_e( 'Works for post stores AND user stores (target type follows the store\'s setting).', 'jsf-query-builder-etch-bridge' ); ?></li>
+						<li><?php esc_html_e( 'Works for the initial page render and JSF AJAX re-renders (the button HTML in the AJAX response carries the right ID for the new cards too).', 'jsf-query-builder-etch-bridge' ); ?></li>
+						<li><?php esc_html_e( 'Other JE blocks (Dynamic Field / Image / Link) are unaffected — Etch resolves those via its own dynamic data layer and they have always worked.', 'jsf-query-builder-etch-bridge' ); ?></li>
+					</ul>
+
+					<h3><?php esc_html_e( 'Extending to more JE blocks', 'jsf-query-builder-etch-bridge' ); ?></h3>
+					<p><?php esc_html_e( 'If a third-party JE add-on registers a block that uses the same', 'jsf-query-builder-etch-bridge' ); ?> <code>get_current_object()</code> <?php esc_html_e( 'pattern, add it via filter:', 'jsf-query-builder-etch-bridge' ); ?></p>
+					<pre><code>add_filter( 'jqbeb_loop_context_block_names', function ( $names ) {
+    $names[] = 'jet-engine/your-block-name';
+    return $names;
+} );</code></pre>
+
+					<div class="jqbeb-callout warn">
+						<strong><?php esc_html_e( 'Limitation:', 'jsf-query-builder-etch-bridge' ); ?></strong>
+						<?php esc_html_e( 'If you change the Data Store Button\'s "Object context" away from', 'jsf-query-builder-etch-bridge' ); ?> <code>default_object</code> (<?php esc_html_e( 'to', 'jsf-query-builder-etch-bridge' ); ?> <code>current_user</code>, <code>queried_user</code>, <code>current_post_author</code>), <?php esc_html_e( 'the bridge no longer intervenes — that path goes through different JE accessors and is rarely useful inside a loop anyway. The default setting is what you want.', 'jsf-query-builder-etch-bridge' ); ?>
+					</div>
 				</div>
 			</details>
 

@@ -16,6 +16,7 @@ class Plugin {
 
 	public ?JSF_Bridge $jsf_bridge = null;
 	public ?JE_Query_Builder_Bridge $je_bridge = null;
+	public ?JE_Loop_Context_Bridge $je_loop_context_bridge = null;
 	public ?Shortcode $shortcode = null;
 	public ?Admin_Page $admin_page = null;
 
@@ -64,6 +65,16 @@ class Plugin {
 		// pre_get_terms) all fire well after init, so init p0 registration
 		// is safe.
 		add_action( 'init', [ $this, 'maybe_boot_je_bridge' ], 0 );
+
+		// JE loop-context bridge — independent of Query Builder. Boots
+		// whenever JetEngine is active (function `jet_engine` exists) so it
+		// covers users who only run native JE blocks inside an Etch loop
+		// without the JE Query Builder bridge. Hooks fire on block render,
+		// well after init, so plugins_loaded registration is safe.
+		if ( function_exists( 'jet_engine' ) ) {
+			require_once JQBEB_DIR . 'includes/class-je-loop-context-bridge.php';
+			$this->je_loop_context_bridge = new JE_Loop_Context_Bridge();
+		}
 
 		add_action( 'admin_notices', [ $this, 'maybe_show_etch_missing_notice' ] );
 	}

@@ -4,10 +4,11 @@ A WordPress plugin that connects [Etch](https://etchwp.com/)'s native Query Loop
 
 ## What it does
 
-The plugin ships two independent bridges:
+The plugin ships independent bridges:
 
 - **JSF bridge** — registers an `Etch Loop` content provider for JetSmartFilters. Filter, pagination, and sort blocks drive the Etch loop with AJAX, with full support for JetEngine Custom Meta Tables (filtering, sorting, indexer counts, dynamic range bounds, live recalculation), an author-controlled empty-results state, and a live `[jsf_etch_count]` shortcode.
 - **JetEngine Query Builder bridge** — lets a JE Query Builder query become the data source for an Etch Query Loop. The Etch preset's args are wholesale-replaced by the JE query, so the loop gets JE's full filter pipeline (including JetEngine's Custom Meta Tables and dynamic args).
+- **JE Data Store Button inside Etch loops (v1.2.0+)** — drop the JetEngine Data Store Button block (favourites, recently-viewed, comparison) into any Etch loop card and each button automatically targets the correct loop item. No wrapper class needed.
 
 Both bridges can layer on the same wrapper. JE provides the base query, JSF stacks user filters on top.
 
@@ -31,6 +32,18 @@ Both bridges can layer on the same wrapper. JE provides the base query, JSF stac
 - SQL queries auto-extract IDs from result rows (`WP_Post` / `WP_User` / `WP_Term` instances or raw `stdClass` rows with `ID` / `id` / `post_id` / `user_id` / `term_id`).
 - Data Stores Query target type auto-detected from the store's post-vs-user setting.
 - Wrapper class hints — `je-as-{posts|users|terms}` (target-type override for SQL), `je-jsf-stack` (full JE result-set fetch for native pagination).
+
+### JetEngine Data Store Button inside Etch loops (v1.2.0+)
+
+Drop the JE **Data Store Button** block (favourites, recently-viewed, comparison stores) into any Etch loop card and each button automatically binds to the correct loop item — frontend renders `data-post="{loop-item-id}"` per card with no wrapper class or extra configuration.
+
+- Works for plain Etch posts loops, the JE Query Builder bridge above, and JSF-bridged loops.
+- Works for post stores AND user stores (target follows the store's setting).
+- Works for initial render and JSF AJAX re-renders.
+- Other JE dynamic blocks (Dynamic Field / Image / Link) are unaffected — Etch resolves those via its own dynamic-data layer.
+- Extend to third-party JE add-on blocks via the `jqbeb_loop_context_block_names` filter.
+
+Background: the Data Store Button resolves its target via `jet_engine()->listings->data->get_current_object()`, which JE updates on the `the_post` hook. Etch's loop block does not fire `the_post` (it uses its own DynamicContextProvider stack instead of `setup_postdata()`), so without this bridge every button on every card bound to the host page. JE's own Listing Grid was unaffected because it runs `WP_Query` the standard way.
 
 ### JetEngine Custom Meta Tables (CMT) — end-to-end
 

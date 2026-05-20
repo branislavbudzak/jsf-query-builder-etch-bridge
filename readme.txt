@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.1.1
+Stable tag: 1.2.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,11 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.2.0 =
+* Feature: JetEngine **Data Store Button** block now works correctly inside Etch loops (both plain Etch posts loops and loops driven by the JE Query Builder bridge). Previously every Data Store Button inside an Etch loop card resolved its target via `jet_engine()->listings->data->get_current_object_id()` — but Etch's loop does NOT call `setup_postdata()` / fire the `the_post` hook (it uses its own `DynamicContextProvider` stack), so JE's `current_object` stayed pinned to the outer page and every button on every card bound to the **page** ID. Clicking any button added the host page to the store instead of the card. In JE's own Listing Grid this had always worked because Listing Grid runs WP_Query the standard way and the `the_post` hook fires `set_current_object($post)` per iteration.
+* New sub-bridge: `JE_Loop_Context_Bridge`. Hooks `pre_render_block` priority 5 and `render_block` priority 5; for any block name in the configured list (default: `jet-engine/data-store-button`) it walks Etch's `DynamicContextProvider` for the topmost `'loop'` entry, swaps JE's `current_object` to that entry's source (WP_Post / WP_User / WP_Term, or a post resolved from a numeric ID), and restores the previous value after render. Stack-shaped stash so nested supported blocks restore in correct order. Works for both initial page load and JSF AJAX in-process render (hooks fire on every `render_block()` call).
+* New filter: `apply_filters( 'jqbeb_loop_context_block_names', [ 'jet-engine/data-store-button' ] )` — extend the supported-block list to cover other JE add-on blocks that use the same `get_current_object()` resolution pattern. Default scope is intentionally narrow to avoid colliding with Etch's native dynamic-data handling for JE Dynamic Field / Dynamic Image / Dynamic Link blocks.
 
 = 1.1.1 =
 * Fix: AJAX pagination on a JE-Query-Builder-backed loop no longer drops the configured JE args (post_type / meta_query / tax_query / orderby / posts_per_page) when any JSF filter is active. `get_args_with_pagination()` was calling `$je_query->set_filtered_prop( '_page', N )` BEFORE `get_query_args()` on a freshly-fetched JE query. JE's Posts_Query writes `_page` directly into `$this->final_query['paged']`; on the first call of a request `final_query` is still `null`, so the assignment AUTOVIVIFIES it as a degenerate 2-key array. The subsequent `get_query_args()` saw a non-null `final_query` and skipped `setup_query()` — so the configured post_type / meta_query / tax_query / orderby never entered `final_query`, and the returned args lost everything except the page. Most visibly with a JSF Location & Distance filter active, where the page 1 result set is already small — pagination collapsed it to empty.

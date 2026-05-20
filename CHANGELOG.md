@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.2.0
+
+### Added
+- **JetEngine Data Store Button now works inside Etch loops.** Both for plain Etch posts loops (Etch's own query) and for loops driven by the JE Query Builder bridge. Previously every Data Store Button rendered inside an Etch loop card bound its `data-post` / `data-args.post_id` to the **page** the loop sat on, not the card's post — so clicking any "add to favourites" button on any card stored the host page. Root cause: JE's Data Store Button resolves its post via `jet_engine()->listings->data->get_current_object_id()`, which reads JE's internal `current_object`. JE updates `current_object` via the `the_post` hook ([jet-engine/.../listings/data.php:96](../jet-engine/includes/components/listings/data.php) → `set_current_object($post)`). Etch's loop does NOT call `setup_postdata()` and does NOT fire `the_post` — it uses its own `DynamicContextProvider` stack ([etch/.../LoopBlock/LoopBlock.php:120-152](../etch/classes/Blocks/LoopBlock/LoopBlock.php)). So JE never sees the iteration and `current_object` stayed pinned to the outer page. In JE Listing Grid the same button worked because Listing Grid runs WP_Query the standard way and `the_post` fires per iteration.
+- **New sub-bridge: `JE_Loop_Context_Bridge`** ([includes/class-je-loop-context-bridge.php](includes/class-je-loop-context-bridge.php)). Hooks `pre_render_block` priority 5 and `render_block` priority 5; for any block name in the configured list (default: `jet-engine/data-store-button`) it walks Etch's `DynamicContextProvider` stack for the topmost `'loop'` entry, reads the entry's source via `DynamicContentEntry::get_source()`, stashes JE's previous `current_object`, calls `set_current_object($loop_item)`, lets the block render, then restores the previous value. Stack-shaped stash array so nested supported blocks (e.g. a Data Store Button inside another supported block) restore in correct order.
+- Walks `array_reverse($stack)` so innermost-loop wins on nested Etch loops — the block is "in" the deepest loop.
+- Accepts `WP_Post` / `WP_User` / `WP_Term` instances directly; falls back to `get_post( (int) $source )` for numeric ID sources. Anything else is skipped (returns null), which is the safe no-op fallback to JE's existing behaviour.
+- Works for both initial page load and JSF AJAX in-process render — `pre_render_block` / `render_block` filters fire on every `render_block()` call regardless of context, and the bridge does not rely on the `JSF_Bridge::$in_ajax_render` flag.
+- **New filter:** `apply_filters( 'jqbeb_loop_context_block_names', [ 'jet-engine/data-store-button' ] )`. Extend the supported-block list to cover third-party JE add-on blocks that use the same `get_current_object()` resolution pattern. Default scope is intentionally narrow — Etch's native dynamic-data resolution already handles JE Dynamic Field / Dynamic Image / Dynamic Link blocks (and other field-resolution blocks) via its own `DynamicContextProvider` lookup; adding them here would be a double-resolution and risk colliding with Etch's expected semantics.
+
+### Notes
+- Bridge boots at `plugins_loaded` (alongside the JSF bridge), gated only on `function_exists( 'jet_engine' )`. The hooks themselves do their own defensive checks for the Etch `DynamicContextProvider` class before each call, so the bridge silently no-ops on pages without Etch loops.
+- No dependency on JE Query Builder — runs even when only JetEngine + Etch are installed.
+- The original Data Store Button render path is unchanged. We only mutate JE's transient `current_object` state for the duration of the target block's render call.
+
 ## 1.1.1
 
 ### Fixed
