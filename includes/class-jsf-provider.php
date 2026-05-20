@@ -69,6 +69,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			return;
 		}
 		if ( isset( $this->applied[ $flag ] ) ) {
+			if ( Debug::pagination_enabled() ) {
+				Debug::log( 'apply_jsf_to_tagged_query GATE_SKIP', [ 'flag' => $flag ] );
+			}
 			return;
 		}
 
@@ -88,6 +91,24 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 
 		$current  = jet_smart_filters()->query->get_current_provider();
 		$query_id = is_array( $current ) && ! empty( $current['query_id'] ) ? $current['query_id'] : 'default';
+
+		if ( Debug::pagination_enabled() ) {
+			Debug::log( 'ajax_get_content ENTRY', [
+				'query_id'              => $query_id,
+				'request_paged'         => $_REQUEST['paged'] ?? null,
+				'request_jet_paged'     => $_REQUEST['jet_paged'] ?? null,
+				'request_pagination'    => $_REQUEST['pagination'] ?? null,
+				'request_query_keys'    => isset( $_REQUEST['query'] ) && is_array( $_REQUEST['query'] )
+					? array_keys( $_REQUEST['query'] )
+					: null,
+				'request_query_geo'     => $_REQUEST['query']['geo_query'] ?? null,
+				'request_top_geo'       => $_REQUEST['geo_query'] ?? null,
+				'request_defaults_keys' => isset( $_REQUEST['defaults'] ) && is_array( $_REQUEST['defaults'] )
+					? array_keys( $_REQUEST['defaults'] )
+					: null,
+				'request_defaults_paged' => $_REQUEST['defaults']['paged'] ?? null,
+			] );
+		}
 
 		$referrer = wp_get_referer();
 		if ( ! $referrer ) {
@@ -458,6 +479,17 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			return;
 		}
 
+		if ( Debug::pagination_enabled() ) {
+			Debug::log( 'merge_jsf_into_query JSF_ARGS', [
+				'jet_paged_from_request' => $jet_paged,
+				'jsf_paged'              => $jsf_args['paged'] ?? null,
+				'jsf_geo_query'          => $jsf_args['geo_query'] ?? null,
+				'jsf_keys'               => array_keys( $jsf_args ),
+				'query_paged_before'     => $query->get( 'paged' ),
+				'query_pp_before'        => $query->get( 'posts_per_page' ),
+			] );
+		}
+
 		foreach ( $jsf_args as $key => $value ) {
 			if ( in_array( $key, [ 'meta_query', 'tax_query', 'date_query' ], true ) ) {
 				$existing = $query->get( $key );
@@ -470,6 +502,15 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			} else {
 				$query->set( $key, $value );
 			}
+		}
+
+		if ( Debug::pagination_enabled() ) {
+			Debug::log( 'merge_jsf_into_query AFTER', [
+				'query_paged'     => $query->get( 'paged' ),
+				'query_pp'        => $query->get( 'posts_per_page' ),
+				'query_geo_query' => $query->get( 'geo_query' ),
+				'query_orderby'   => $query->get( 'orderby' ),
+			] );
 		}
 	}
 }

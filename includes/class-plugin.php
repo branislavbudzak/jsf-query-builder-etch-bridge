@@ -34,6 +34,11 @@ class Plugin {
 			dirname( JQBEB_BASENAME ) . '/languages'
 		);
 
+		// Toggleable pagination diagnostics. No-op unless
+		// JQBEB_DEBUG_PAGINATION is defined truthy in wp-config.php.
+		require_once JQBEB_DIR . 'includes/class-debug.php';
+		Debug::register_sql_listener();
+
 		// Admin page always loads — it shows live dependency status.
 		require_once JQBEB_DIR . 'includes/class-admin-page.php';
 		$this->admin_page = new Admin_Page();

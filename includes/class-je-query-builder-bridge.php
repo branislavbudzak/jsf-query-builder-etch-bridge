@@ -271,9 +271,33 @@ class JE_Query_Builder_Bridge {
 	/* -------------------- REGULAR QUERY APPLICATION -------------------- */
 
 	private function apply_regular_to_posts( \WP_Query $query, $je_query ): void {
+		if ( Debug::pagination_enabled() ) {
+			Debug::log( 'apply_regular_to_posts BEFORE', [
+				'query_paged'        => $query->get( 'paged' ),
+				'query_pp'           => $query->get( 'posts_per_page' ),
+				'query_geo_query'    => $query->get( 'geo_query' ),
+				'request_paged'      => $_REQUEST['paged'] ?? null,
+				'request_jet_paged'  => $_REQUEST['jet_paged'] ?? null,
+				'request_pagenum'    => $_REQUEST['pagenum'] ?? null,
+				'request_top_geo'    => $_REQUEST['geo_query'] ?? null,
+				'request_query_geo'  => $_REQUEST['query']['geo_query'] ?? null,
+				'is_ajax'            => wp_doing_ajax(),
+				'in_ajax_render'     => JSF_Bridge::$in_ajax_render,
+			] );
+		}
 		$args = $this->get_args_with_pagination( $je_query );
 		if ( null === $args ) {
 			return;
+		}
+		if ( Debug::pagination_enabled() ) {
+			Debug::log( 'apply_regular_to_posts JE_ARGS', [
+				'paged'          => $args['paged'] ?? null,
+				'posts_per_page' => $args['posts_per_page'] ?? null,
+				'geo_query'      => $args['geo_query'] ?? null,
+				'orderby'        => $args['orderby'] ?? null,
+				'has_meta_query' => isset( $args['meta_query'] ),
+				'has_tax_query'  => isset( $args['tax_query'] ),
+			] );
 		}
 		foreach ( $args as $key => $value ) {
 			$query->set( $key, $value );
