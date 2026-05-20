@@ -925,10 +925,36 @@ class JE_Query_Builder_Bridge {
 	/**
 	 * Inject pagination from URL into the JE query, then return its args.
 	 * Returns null if args are empty (caller pops in that case).
+	 *
+	 * Order matters: get_query_args() MUST run before set_filtered_prop()
+	 * on a freshly-fetched JE query. JetEngine's Posts_Query::set_filtered_prop
+	 * for `_page` writes directly into `$this->final_query['paged']`
+	 * (jet-engine/.../queries/posts.php:320). When `final_query` is still
+	 * null (lazy-built by setup_query() inside get_query_args()), that
+	 * assignment AUTOVIVIFIES `final_query` as a degenerate 2-key array
+	 * containing only `paged` + `page`. The subsequent get_query_args()
+	 * then sees a non-null `final_query` and skips setup_query() — so the
+	 * configured post_type / meta_query / tax_query / orderby never enter
+	 * `final_query` and the returned args lose everything except the page
+	 * we just set. Result: WP_Query runs with paged=N and Etch-preset
+	 * defaults for everything else, which on a JSF-filtered loop yields
+	 * zero rows (the JSF meta/geo clauses match against a post_type='any'
+	 * universe instead of the configured CPT).
+	 *
+	 * Mirror of the pattern already in extract_ids_from_get_items() (Merged
+	 * / SQL / Data Store path). Calling get_query_args() first triggers
+	 * setup_query() lazily; the second call returns the populated args.
 	 */
 	private function get_args_with_pagination( $je_query ): ?array {
 		$this->in_extraction = true;
 		try {
+			// Force setup_query() to run via get_query_args() so final_query
+			// is populated with the configured args before set_filtered_prop
+			// can autovivify it. See method-level docblock.
+			if ( method_exists( $je_query, 'get_query_args' ) ) {
+				$je_query->get_query_args();
+			}
+
 			if ( method_exists( $je_query, 'set_filtered_prop' ) ) {
 				foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
 					if ( ! empty( $_REQUEST[ $page_key ] ) ) {

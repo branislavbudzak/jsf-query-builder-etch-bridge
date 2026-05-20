@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+- **AJAX pagination on a JE-Query-Builder-backed loop no longer drops the configured JE args (post_type / meta_query / tax_query / orderby / posts_per_page) when any JSF filter is active.** `get_args_with_pagination()` was calling `$je_query->set_filtered_prop( '_page', N )` BEFORE `get_query_args()` on a freshly-fetched JE query. JE's Posts_Query writes `_page` directly into `$this->final_query['paged']` ([jet-engine/.../queries/posts.php:320](../jet-engine/includes/components/query-builder/queries/posts.php)); on the first call of a request `final_query` is still `null`, so the assignment AUTOVIVIFIES `final_query` as a degenerate 2-key array (`paged` + `page`). The subsequent `get_query_args()` saw a non-null `final_query` and skipped `setup_query()` — so the configured post_type / meta_query / tax_query / orderby never entered `final_query`, and the returned args lost everything except the page we just set. Net effect: page 2 click on a JE-bridged loop ran against a degenerate query (`post_type='any'` Etch-preset default, no JSF tax/meta clauses scoped to the right CPT, JSF-applied geo/meta clauses matching across an over-broad universe) yielding 0 rows — most visibly when a JSF Location & Distance filter was active, where the page 1 result set was already small. Mirrors the pattern already used in `extract_ids_from_get_items()` (Merged / SQL / Data Store path) — calling `get_query_args()` first triggers `setup_query()` lazily, then `set_filtered_prop` mutates an already-populated `final_query`. Affected: all JE Query Builder Posts queries paginated via JSF on a Regular (non-jsf-stack) Posts loop.
+
+### Added
+- **`JQBEB_DEBUG_PAGINATION` diagnostic harness.** Off by default; enable per-site with `define( 'JQBEB_DEBUG_PAGINATION', true );` in `wp-config.php`. Routes a per-request buffer of `Debug::log()` checkpoints to the browser DevTools console as collapsed groups (`[jqbeb-debug] page-load (N entries)` / `[jqbeb-debug] ajax [provider/qid] paged=N (N entries)`) via two channels: inline `<script>` in `wp_footer` for the non-AJAX initial render, and the `_jqbeb_debug` key on the JSON response via the `jet-smart-filters/render/ajax/data` filter for JSF AJAX. Captures the `apply_regular_to_posts` / `merge_jsf_into_query` / `posts_request` / `the_posts` boundaries, plus `$_REQUEST` shape at admin-ajax entry. Used to diagnose the JE-args dropout above; kept in tree for future debugging.
+
 ## 1.1.0
 
 ### Added
