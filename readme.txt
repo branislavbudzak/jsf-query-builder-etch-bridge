@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.1.0
+Stable tag: 1.1.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,11 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.1.1 =
+* Fix: AJAX pagination on a JE-Query-Builder-backed loop no longer drops the configured JE args (post_type / meta_query / tax_query / orderby / posts_per_page) when any JSF filter is active. `get_args_with_pagination()` was calling `$je_query->set_filtered_prop( '_page', N )` BEFORE `get_query_args()` on a freshly-fetched JE query. JE's Posts_Query writes `_page` directly into `$this->final_query['paged']`; on the first call of a request `final_query` is still `null`, so the assignment AUTOVIVIFIES it as a degenerate 2-key array. The subsequent `get_query_args()` saw a non-null `final_query` and skipped `setup_query()` — so the configured post_type / meta_query / tax_query / orderby never entered `final_query`, and the returned args lost everything except the page. Most visibly with a JSF Location & Distance filter active, where the page 1 result set is already small — pagination collapsed it to empty.
+* Fix mirrors the order-of-operations pattern already used in `extract_ids_from_get_items()` (Merged / SQL / Data Store path): call `get_query_args()` once first to trigger `setup_query()` lazily, THEN `set_filtered_prop` on the populated `final_query`, THEN `get_query_args()` again to read. Affected: all JE Query Builder Posts queries paginated via JSF on a Regular (non-jsf-stack) Posts loop.
+* Added: `JQBEB_DEBUG_PAGINATION` diagnostic harness. Off by default; enable per-site with `define( 'JQBEB_DEBUG_PAGINATION', true );` in `wp-config.php`. Routes a per-request buffer of `Debug::log()` checkpoints to the browser DevTools console as collapsed groups (`[jqbeb-debug] page-load (N entries)` / `[jqbeb-debug] ajax [provider/qid] paged=N (N entries)`) via two channels — inline `<script>` in `wp_footer` for the non-AJAX initial render, and the `_jqbeb_debug` key on the JSON response via the `jet-smart-filters/render/ajax/data` filter for JSF AJAX. Captures the `apply_regular_to_posts` / `merge_jsf_into_query` / `posts_request` / `the_posts` boundaries, plus `$_REQUEST` shape at admin-ajax entry. Kept in tree for future debugging — zero cost when off (single `defined()` check guards every call site).
 
 = 1.1.0 =
 * Feature: author-controlled empty-results state via Etch. Drop any Etch element (heading, card, CTA, "request a vehicle alert" form, dynamic-data block, …) on the page with class `jsf-etch-empty-state` and the bridge auto-shows it whenever the paired loop wrapper has zero rendered children. Hidden by default via injected `display:none !important`; revealed by toggling `is-active`. CSS-only fallback: site CSS can target `.jsf-etch-loop.is-empty::before { content: "…"; }` for a one-line no-results message without any author markup.
