@@ -188,11 +188,56 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		if ( is_array( $direct_cached ) && ! empty( $direct_cached['block'] ) ) {
 
 			$post_id   = (int) ( $direct_cached['post_id'] ?? 0 );
-			$prev_post = $GLOBALS['post'] ?? null;
+			$context   = is_array( $direct_cached['context'] ?? null ) ? $direct_cached['context'] : null;
 
-			if ( $post_id > 0 ) {
+			$prev_post         = $GLOBALS['post']         ?? null;
+			$prev_wp_query     = $GLOBALS['wp_query']     ?? null;
+			$prev_wp_the_query = $GLOBALS['wp_the_query'] ?? null;
+
+			// Restore main-query context so JE Query Builder Dynamic Args
+			// (and any other downstream code reading get_queried_object()
+			// / is_tax() / is_post_type_archive() / $wp_query->query_vars)
+			// resolve to the same values they did on initial render.
+			//
+			// Without this, AJAX runs in admin-ajax.php context where
+			// $wp_query is the admin-ajax catch-all and has none of the
+			// archive flags / queried term set. A JE query bound to
+			// "current queried term" on a brand archive would collapse
+			// to "no brand filter" on AJAX and return the full unfiltered
+			// universe — visible to the user as pagination on page 2
+			// showing different (much larger) results than page 1.
+			//
+			// We assemble a synthetic WP_Query from the snapshot taken
+			// by JSF_Bridge::capture_render_context() and swap it into
+			// $wp_query / $wp_the_query around render_block(). All
+			// previous globals are restored in finally.
+			$fake_query = null;
+			if ( $context ) {
+				$fake_query = JSF_Bridge::build_context_query( $context );
+				if ( $fake_query instanceof \WP_Query ) {
+					$GLOBALS['wp_query']     = $fake_query;
+					$GLOBALS['wp_the_query'] = $fake_query;
+				}
+			}
+
+			// Singular post setup runs in two cases:
+			//   1. We have a fresh 1.3.0+ context snapshot AND it says
+			//      we're on a singular page → setup_postdata for any
+			//      JE / dynamic block that reads $GLOBALS['post'] / the
+			//      author-data globals during the wrapper render.
+			//   2. We have a 1.2.x-shape cache entry (no `context` key
+			//      yet, just `post_id`) → backward-compat path. The
+			//      old code path only ever set $post for singular, so
+			//      this preserves that exact behaviour for in-flight
+			//      transients during the 1h TTL after upgrade.
+			$is_singular_ctx = $context
+				&& is_array( $context['flags'] ?? null )
+				&& ! empty( $context['flags']['is_singular'] );
+			$do_singular_setup = $post_id > 0 && ( null === $context || $is_singular_ctx );
+
+			if ( $do_singular_setup ) {
 				$post_obj = get_post( $post_id );
-				if ( $post_obj ) {
+				if ( $post_obj instanceof \WP_Post ) {
 					$GLOBALS['post'] = $post_obj;
 					setup_postdata( $post_obj );
 				}
@@ -213,10 +258,18 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				$rendered = render_block( $direct_cached['block'] );
 			} finally {
 				JSF_Bridge::$in_ajax_render = false;
-				if ( $post_id > 0 ) {
+
+				// Tear down in reverse order. wp_reset_postdata() is a
+				// no-op if no post is currently set up, so it's safe
+				// to call unconditionally — but we only invoked
+				// setup_postdata() when $do_singular_setup, so mirror
+				// that gate here for clarity.
+				if ( $do_singular_setup ) {
 					wp_reset_postdata();
-					$GLOBALS['post'] = $prev_post;
 				}
+				$GLOBALS['post']         = $prev_post;
+				$GLOBALS['wp_query']     = $prev_wp_query;
+				$GLOBALS['wp_the_query'] = $prev_wp_the_query;
 			}
 
 			$inner = $this->extract_wrapper_inner_html( $rendered, $query_id );

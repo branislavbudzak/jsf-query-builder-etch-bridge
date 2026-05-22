@@ -30,10 +30,21 @@
  * # Default styling
  *
  * `.jsf-etch-empty-state:not(.is-active)` is hidden via an inline
- * `display:none !important` injected at script load. Sites that prefer
- * a different hiding mechanism (visibility, opacity, off-screen
- * positioning) can override with a higher-specificity rule on the
- * element's frontend stylesheet.
+ * `display:none !important` rule. The PRIMARY copy of that rule is
+ * emitted server-side from `JSF_Bridge::print_empty_state_styles()` in
+ * `<head>` so it applies BEFORE the browser paints any body content —
+ * loops with results never flash their authored empty-state element on
+ * page load. This script's `injectDefaultStyles()` call is now a
+ * defensive fallback for contexts where wp_head didn't fire (content
+ * lazy-loaded via REST into a shadow DOM, dev test harnesses, etc.); it
+ * checks for the existing `<style id="jqbeb-empty-state-style">` and
+ * skips if already present.
+ *
+ * Sites that prefer a different hiding mechanism (visibility, opacity,
+ * off-screen positioning) can disable the server-side rule via
+ * `apply_filters( 'jqbeb_empty_state_default_hide_enabled', false )`
+ * and ship their own CSS — JS will still flip `is-active` so any
+ * custom selector can hook in.
  *
  * # Re-entry
  *

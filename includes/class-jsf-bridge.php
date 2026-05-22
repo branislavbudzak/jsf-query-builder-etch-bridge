@@ -89,6 +89,15 @@ class JSF_Bridge {
 		// By then loops have rendered and query props are populated.
 		add_action( 'wp_footer', [ $this, 'output_footer_data' ], 5 );
 
+		// Default-hide every .jsf-etch-empty-state from the very first paint
+		// so loops WITH results never flash their authored empty-state element
+		// for the ~50-200ms before assets/js/empty-state.js runs and would
+		// otherwise toggle visibility. JS still ADDS `is-active` when a loop
+		// has 0 results — for that case the empty-state appears once JS runs
+		// (no visual regression, since previously that case had the same
+		// timing — empty-state was just always-on until JS hid it).
+		add_action( 'wp_head', [ $this, 'print_empty_state_styles' ], 10 );
+
 		add_filter( 'jet-smart-filters/pre-get-indexed-data', [ $this, 'compute_indexed_counts' ], 10, 4 );
 
 		// Recompute JSF Range filter dynamic min/max from JE Custom Meta Tables
@@ -327,6 +336,22 @@ class JSF_Bridge {
 		// AJAX render — those are reads, not writes). The cached tree
 		// lets JSF_Provider::ajax_get_content render the loop in-process
 		// instead of doing a full-page HTTP loopback (~10-50× faster).
+		//
+		// We also snapshot the main-query context (conditional tags +
+		// relevant query_vars + queried_object descriptor) so the AJAX
+		// fast path can restore $GLOBALS['wp_query'] / $wp_the_query
+		// before render_block(). This is what lets JE Query Builder
+		// queries whose Dynamic Args read get_queried_object() /
+		// is_tax() / is_post_type_archive() resolve to the SAME term /
+		// post type they did on initial render — without it, AJAX runs
+		// in admin-ajax context where $wp_query has no archive flags
+		// and JE's dynamic clauses silently collapse to "no filter",
+		// returning a different (typically much larger) base set than
+		// page 1. See CHANGELOG 1.3.0.
+		//
+		// `post_id` is kept alongside `context` for backward compat
+		// with cache entries written by 1.2.x — within 1h of upgrade,
+		// in-flight transients with the old shape still resolve.
 		if ( ! self::is_loopback() && ! self::$in_ajax_render ) {
 			$cache_key = self::block_cache_key( self::current_path(), $query_id );
 			set_transient(
@@ -334,6 +359,7 @@ class JSF_Bridge {
 				[
 					'block'   => $block,
 					'post_id' => (int) get_queried_object_id(),
+					'context' => self::capture_render_context(),
 				],
 				HOUR_IN_SECONDS
 			);
@@ -363,6 +389,213 @@ class JSF_Bridge {
 		}
 
 		return $block_content;
+	}
+
+	/* -------------------- MAIN-QUERY CONTEXT SNAPSHOT -------------------- */
+
+	/**
+	 * Snapshot enough of the current main-query state that the JSF AJAX
+	 * fast-path can rebuild it for `render_block()`. Returns a flat,
+	 * transient-safe array (scalars + arrays only — no WP_Post / WP_Term
+	 * / WP_User instances, which we resolve at restore time so a stale
+	 * cache after a term rename / post update still picks up fresh data).
+	 *
+	 * Captures three things:
+	 *
+	 * 1. **Conditional tag flags** — the `is_*` properties from `WP_Query`
+	 *    that drive `is_tax()` / `is_archive()` / `is_post_type_archive()`
+	 *    / etc. global functions. These are what JE Query Builder's
+	 *    Dynamic Args evaluator branches on when deciding which tax /
+	 *    post_type / object clause to inject.
+	 *
+	 * 2. **Relevant `query_vars`** — the subset that downstream code
+	 *    (JE, dynamic-content blocks, third-party hooks) typically reads
+	 *    from `$wp_query->get( … )` or `$wp_query->query_vars`. We
+	 *    deliberately allowlist (not capture-everything) to keep the
+	 *    transient small and avoid serialising private WP internals.
+	 *
+	 * 3. **Queried object descriptor** — `{ type, id, taxonomy? }` for
+	 *    the term / post / user / post_type that the page is "about".
+	 *    `get_queried_object()` global reads `$wp_query->queried_object`
+	 *    directly via `isset()`, so reconstructing this is the key to
+	 *    making JE's `get_queried_term_id` / `get_queried_post_id`
+	 *    macros work the same way they do on the initial page render.
+	 *
+	 * @return array{flags: array<string, bool>, query_vars: array<string, mixed>, queried_object: ?array{type: string, id?: int, taxonomy?: string, name?: string}}
+	 */
+	public static function capture_render_context(): array {
+		global $wp_query;
+
+		$context = [
+			'flags'          => [],
+			'query_vars'     => [],
+			'queried_object' => null,
+		];
+
+		// is_* property snapshot. Allowlist matches the WP_Query class
+		// properties (NOT method names) that the global is_*() helpers
+		// read through. Keep in sync with WP core's WP_Query if any new
+		// conditional tag appears that JE / third-party Dynamic Args
+		// branches on.
+		$flag_names = [
+			'is_singular', 'is_single', 'is_page', 'is_attachment',
+			'is_archive', 'is_post_type_archive',
+			'is_tax', 'is_category', 'is_tag',
+			'is_author', 'is_date', 'is_year', 'is_month', 'is_day', 'is_time',
+			'is_search', 'is_home', 'is_front_page', 'is_404', 'is_paged',
+		];
+
+		if ( $wp_query instanceof \WP_Query ) {
+			foreach ( $flag_names as $flag ) {
+				if ( property_exists( $wp_query, $flag ) ) {
+					$context['flags'][ $flag ] = (bool) $wp_query->$flag;
+				}
+			}
+
+			// query_vars allowlist. Skip anything that isn't a scalar /
+			// array / null — defends against rogue plugin code stuffing
+			// objects or closures into query_vars (would either fail to
+			// serialize or wake up with unexpected behaviour).
+			$relevant_keys = [
+				'post_type', 'name', 'pagename', 'page_id',
+				'cat', 'category_name', 'category__in', 'category__not_in', 'category__and',
+				'tag', 'tag_id', 'tag__in', 'tag__not_in', 'tag__and',
+				'tag_slug__in', 'tag_slug__and',
+				'term', 'taxonomy',
+				'tax_query', 'meta_query',
+				'author', 'author_name', 'author__in', 'author__not_in',
+				'year', 'monthnum', 'day', 'w', 'hour', 'minute', 'second', 'm',
+				's', 'sentence', 'exact',
+				'paged', 'posts_per_page', 'offset', 'nopaging', 'posts_per_archive_page',
+				'post_name__in', 'post__in', 'post__not_in',
+				'post_parent', 'post_parent__in', 'post_parent__not_in',
+				'post_status',
+			];
+			$qv = is_array( $wp_query->query_vars ?? null ) ? $wp_query->query_vars : [];
+			foreach ( $relevant_keys as $key ) {
+				if ( ! array_key_exists( $key, $qv ) ) {
+					continue;
+				}
+				$value = $qv[ $key ];
+				if ( is_scalar( $value ) || is_array( $value ) || is_null( $value ) ) {
+					$context['query_vars'][ $key ] = $value;
+				}
+			}
+		}
+
+		$queried = function_exists( 'get_queried_object' ) ? get_queried_object() : null;
+		if ( $queried instanceof \WP_Post ) {
+			$context['queried_object'] = [
+				'type' => 'post',
+				'id'   => (int) $queried->ID,
+			];
+		} elseif ( $queried instanceof \WP_Term ) {
+			$context['queried_object'] = [
+				'type'     => 'term',
+				'id'       => (int) $queried->term_id,
+				'taxonomy' => (string) $queried->taxonomy,
+			];
+		} elseif ( $queried instanceof \WP_User ) {
+			$context['queried_object'] = [
+				'type' => 'user',
+				'id'   => (int) $queried->ID,
+			];
+		} elseif ( $queried instanceof \WP_Post_Type ) {
+			$context['queried_object'] = [
+				'type' => 'post_type',
+				'name' => (string) $queried->name,
+			];
+		}
+
+		return $context;
+	}
+
+	/**
+	 * Rebuild a `WP_Query` instance from a context snapshot so the JSF AJAX
+	 * fast-path can swap it into `$GLOBALS['wp_query']` / `$wp_the_query`
+	 * around `render_block()`.
+	 *
+	 * Constructed via `new WP_Query()` with no args, which skips `query()`
+	 * (so no SQL fires). All `is_*` flags default to false; we set the
+	 * snapshot's flags directly on the object. `queried_object` and
+	 * `queried_object_id` are populated as resolved instances so
+	 * `get_queried_object()` (which short-circuits via `isset()`) returns
+	 * the right term / post / user without re-resolving from query_vars.
+	 *
+	 * Returns null when the snapshot is empty (e.g. transient from 1.2.x
+	 * upgrade path that didn't carry context yet) — caller falls back to
+	 * the legacy `post_id` singular-only restoration.
+	 *
+	 * @param array{flags?: array<string, bool>, query_vars?: array<string, mixed>, queried_object?: ?array<string, mixed>} $context
+	 */
+	public static function build_context_query( array $context ): ?\WP_Query {
+		if ( empty( $context['flags'] ) && empty( $context['query_vars'] ) && empty( $context['queried_object'] ) ) {
+			return null;
+		}
+
+		$query = new \WP_Query();
+
+		// Apply is_* flags. Pattern-gate the key to avoid mass assignment
+		// if someone stuffs an unexpected name into the snapshot.
+		if ( ! empty( $context['flags'] ) && is_array( $context['flags'] ) ) {
+			foreach ( $context['flags'] as $flag => $value ) {
+				if ( ! is_string( $flag ) || ! preg_match( '/^is_[a-z0-9_]+$/', $flag ) ) {
+					continue;
+				}
+				if ( property_exists( $query, $flag ) ) {
+					$query->$flag = (bool) $value;
+				}
+			}
+		}
+
+		// Apply query_vars.
+		if ( ! empty( $context['query_vars'] ) && is_array( $context['query_vars'] ) ) {
+			foreach ( $context['query_vars'] as $key => $value ) {
+				if ( ! is_string( $key ) ) {
+					continue;
+				}
+				$query->set( $key, $value );
+			}
+		}
+
+		// Resolve queried_object descriptor → live WP_Post / WP_Term / WP_User / WP_Post_Type.
+		if ( ! empty( $context['queried_object'] ) && is_array( $context['queried_object'] ) ) {
+			$qo   = $context['queried_object'];
+			$type = is_string( $qo['type'] ?? null ) ? $qo['type'] : '';
+			$id   = (int) ( $qo['id'] ?? 0 );
+
+			if ( 'post' === $type && $id > 0 ) {
+				$obj = get_post( $id );
+				if ( $obj instanceof \WP_Post ) {
+					$query->queried_object    = $obj;
+					$query->queried_object_id = (int) $obj->ID;
+				}
+			} elseif ( 'term' === $type && $id > 0 ) {
+				$taxonomy = isset( $qo['taxonomy'] ) && is_string( $qo['taxonomy'] ) ? $qo['taxonomy'] : '';
+				$obj      = $taxonomy ? get_term( $id, $taxonomy ) : get_term( $id );
+				if ( $obj instanceof \WP_Term ) {
+					$query->queried_object    = $obj;
+					$query->queried_object_id = (int) $obj->term_id;
+				}
+			} elseif ( 'user' === $type && $id > 0 ) {
+				$obj = get_user_by( 'id', $id );
+				if ( $obj instanceof \WP_User ) {
+					$query->queried_object    = $obj;
+					$query->queried_object_id = (int) $obj->ID;
+				}
+			} elseif ( 'post_type' === $type ) {
+				$name = isset( $qo['name'] ) && is_string( $qo['name'] ) ? $qo['name'] : '';
+				if ( $name && post_type_exists( $name ) ) {
+					$pt = get_post_type_object( $name );
+					if ( $pt ) {
+						$query->queried_object    = $pt;
+						$query->queried_object_id = 0;
+					}
+				}
+			}
+		}
+
+		return $query;
 	}
 
 	/* -------------------- COUNT SCRIPT -------------------- */
@@ -397,6 +630,37 @@ class JSF_Bridge {
 			$this->asset_version( 'assets/js/empty-state.js' ),
 			true
 		);
+	}
+
+	/**
+	 * Inline `<style>` printed in `<head>` to default-hide every
+	 * `.jsf-etch-empty-state` element until JS reveals it for loops that
+	 * actually returned 0 results.
+	 *
+	 * Same rule as the one assets/js/empty-state.js injects at runtime, but
+	 * applied BEFORE the browser paints any body content — so authored
+	 * empty-state elements never flash visible-then-hidden on loops with
+	 * results. The runtime injection in empty-state.js is now a defensive
+	 * fallback for edge contexts where wp_head doesn't fire (e.g. content
+	 * lazy-loaded via REST into a shadow DOM, dev test harnesses).
+	 *
+	 * The `<style>` ID matches the runtime injector's `STYLE_TAG_ID` so the
+	 * JS-side check (`document.getElementById(STYLE_TAG_ID)`) sees it and
+	 * skips re-injection. No double rule, no specificity surprises.
+	 *
+	 * Sites that want different hiding semantics (visibility:hidden,
+	 * opacity:0 with a transition, off-screen positioning, server-side
+	 * Etch Conditions taking over entirely) can suppress this via the
+	 * `jqbeb_empty_state_default_hide_enabled` filter and ship their own CSS.
+	 */
+	public function print_empty_state_styles(): void {
+		if ( is_admin() || wp_doing_ajax() || ( function_exists( 'is_feed' ) && is_feed() ) ) {
+			return;
+		}
+		if ( ! apply_filters( 'jqbeb_empty_state_default_hide_enabled', true ) ) {
+			return;
+		}
+		echo "<style id=\"jqbeb-empty-state-style\">.jsf-etch-empty-state:not(.is-active){display:none !important}</style>\n";
 	}
 
 	/**
