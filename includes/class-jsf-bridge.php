@@ -85,6 +85,9 @@ class JSF_Bridge {
 		add_filter( 'render_block', [ $this, 'on_render_block' ], 999, 2 );
 
 		add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_count_script' ] );
+		// Priority 16 — after JSF's own conditional `jet-smart-filters` script
+		// enqueue at wp_footer p15, before wp_print_footer_scripts at p20.
+		add_action( 'wp_footer', [ $this, 'enqueue_range_fill_script' ], 16 );
 		// Priority 5 so it runs before wp_print_footer_scripts (p20).
 		// By then loops have rendered and query props are populated.
 		add_action( 'wp_footer', [ $this, 'output_footer_data' ], 5 );
@@ -608,16 +611,6 @@ class JSF_Bridge {
 			$this->asset_version( 'assets/js/count.js' ),
 			true
 		);
-		// Range filter pending-state resolver — bridges JSF 3.8.0.1+ async
-		// dynamic-range pattern for our 'etch-loop' provider. See
-		// assets/js/range-fill.js for full notes.
-		wp_enqueue_script(
-			'jqbeb-range-fill',
-			JQBEB_URL . 'assets/js/range-fill.js',
-			[ 'jet-smart-filters' ],
-			$this->asset_version( 'assets/js/range-fill.js' ),
-			true
-		);
 		// Empty-results state toggle — flips `is-empty` on each loop wrapper
 		// and `is-active` on `.jsf-etch-empty-state` Etch elements paired
 		// with the wrapper, so users can author a custom empty-state in
@@ -628,6 +621,42 @@ class JSF_Bridge {
 			JQBEB_URL . 'assets/js/empty-state.js',
 			[],
 			$this->asset_version( 'assets/js/empty-state.js' ),
+			true
+		);
+	}
+
+	/**
+	 * Range filter pending-state resolver — bridges the JSF 3.8.0.1+ async
+	 * dynamic-range pattern for our 'etch-loop' provider. See
+	 * assets/js/range-fill.js for full notes.
+	 *
+	 * Enqueued at `wp_footer` priority 16 rather than `wp_enqueue_scripts`
+	 * because JSF registers its own `jet-smart-filters` handle late and
+	 * CONDITIONALLY: `Jet_Smart_Filters_Filter_Manager::filter_scripts()` runs
+	 * at `wp_footer` p15 and returns early when `filters_not_used` is still
+	 * true, i.e. on every page that renders no JSF filter. Declaring a hard
+	 * dependency on that handle from `wp_enqueue_scripts` therefore leaves an
+	 * unresolvable dependency on filter-less pages — WP silently drops our
+	 * script and Query Monitor reports "Missing Dependencies:
+	 * jet-smart-filters (missing)".
+	 *
+	 * Running after JSF's p15 lets us ask `wp_script_is()` whether the handle
+	 * actually exists: on filter-less pages we skip the enqueue entirely (the
+	 * script would be a no-op there anyway), on filter pages the dependency is
+	 * registered so load order stays guaranteed. `wp_print_footer_scripts`
+	 * fires at p20, so a p16 enqueue is still printed.
+	 */
+	public function enqueue_range_fill_script(): void {
+		if ( ! wp_script_is( 'jet-smart-filters', 'enqueued' ) &&
+		     ! wp_script_is( 'jet-smart-filters', 'registered' ) ) {
+			return;
+		}
+
+		wp_enqueue_script(
+			'jqbeb-range-fill',
+			JQBEB_URL . 'assets/js/range-fill.js',
+			[ 'jet-smart-filters' ],
+			$this->asset_version( 'assets/js/range-fill.js' ),
 			true
 		);
 	}

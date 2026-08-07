@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.3.0
+Stable tag: 1.3.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,9 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.3.1 =
+* Fix: `jqbeb-range-fill` no longer reports "Missing Dependencies: jet-smart-filters (missing)" in Query Monitor on pages that render no JSF filter. The script was enqueued unconditionally on `wp_enqueue_scripts` with a hard `jet-smart-filters` dependency, but JSF registers that handle late AND conditionally (`Jet_Smart_Filters_Filter_Manager::filter_scripts()` at `wp_footer` p15, early-returns when `filters_not_used` is still true). On filter-less pages the dependency was unresolvable, so WP silently dropped the script and Query Monitor flagged it on every such request. Bridge now enqueues `jqbeb-range-fill` at `wp_footer` priority 16 — after JSF's p15, before `wp_print_footer_scripts` at p20 — and skips the enqueue entirely when the `jet-smart-filters` handle is absent. No behaviour change on pages that do render filters: the dependency is registered by then, so load order is still guaranteed.
 
 = 1.3.0 =
 * Fix: JSF AJAX pagination / sort on archive, taxonomy, and CPT-archive pages now preserves the main-query context for JE Query Builder Dynamic Args. Until 1.2.x, the AJAX fast-path ran inside `admin-ajax.php` where `$wp_query` is the catch-all (no `is_tax()` / `is_post_type_archive()` flags, no `queried_object`), so any JE query whose Dynamic Args read `get_queried_object()` / `is_*()` collapsed to "no filter" and resolved against the full unfiltered universe. Visible symptom: page 1 renders correctly (e.g. 56 brand-scoped listings), page 2 returns rows from outside the brand scope. Bridge now snapshots the main-query state at initial render (conditional-tag flags + `query_vars` allowlist + `queried_object` descriptor) into the existing block-tree transient, and rebuilds a synthetic `WP_Query` before the AJAX `render_block()` call. New WP_Query is constructed via `new WP_Query()` with no args (no SQL fires), `is_*` properties + `query_vars` set directly, `queried_object` resolved fresh at restore time so a stale cache after a term rename / post update picks up new data.

@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.3.1
+
+### Fixed
+- **`jqbeb-range-fill` no longer produces a "Missing Dependencies: jet-smart-filters (missing)" report in Query Monitor.** `JSF_Bridge::enqueue_count_script()` enqueued `assets/js/range-fill.js` on `wp_enqueue_scripts` with a hard `[ 'jet-smart-filters' ]` dependency, but JSF registers that script handle both LATE and CONDITIONALLY: `Jet_Smart_Filters_Filter_Manager::filter_scripts()` (jet-smart-filters/includes/filters/manager.php:36) is hooked to `wp_footer` priority 15 and early-returns while `jet_smart_filters()->filters_not_used` is still true, i.e. on every page that renders no JSF filter block. On those pages the handle never exists, so `WP_Dependencies` cannot resolve our dependency, silently drops `jqbeb-range-fill` from the output, and Query Monitor reports it on each request. Bridge now enqueues the script from a dedicated `wp_footer` priority 16 callback (`JSF_Bridge::enqueue_range_fill_script()`) — after JSF's p15, before `wp_print_footer_scripts` at p20 — gated on `wp_script_is( 'jet-smart-filters', 'enqueued' | 'registered' )`. Filter-less pages skip the enqueue entirely (the script is a no-op there — it only walks `window.JetSmartFilters.filterGroups`, which does not exist), and pages that do render filters keep the explicit dependency so load order is still guaranteed. No user-visible behaviour change; range filters keep filling exactly as in 1.0.3+.
+
 ## 1.3.0
 
 ### Fixed
