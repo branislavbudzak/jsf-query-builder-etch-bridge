@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.3.1
+Stable tag: 1.3.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,11 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.3.2 =
+* Fix: JSF sorting (and any filter value containing a quote, backslash, `&` or `#`) is no longer silently dropped on the AJAX HTTP-loopback path. The loopback URL was built from `$_REQUEST`, which WP slashes via `wp_magic_quotes()`. JSF sends its sort payload as a JSON string, so forwarding it verbatim made the loopback request slash it a second time; JSF's parser (`json_decode( wp_unslash( $value ) )`) strips only one level, `json_decode()` returned null, and the whole sort clause was discarded with no warning and HTTP 200, the loop rendered in its default order. Values are now unslashed (`wp_unslash`) and URL-encoded (`urlencode_deep`) before the URL is assembled; `add_query_arg()` does not encode the args it is handed, so an unencoded `&` in a search term used to split the query string as well.
+* Fix: non-default-language pages on TranslatePress multi-domain setups now reach the AJAX fast path. The block-tree transient is keyed on the request path, but TranslatePress SEO Pack overwrites `$_SERVER['REQUEST_URI']` with the default-language slug at `plugins_loaded` p3 (stashing the original in `$TRP_ORIGINAL_REQUEST_URI`). A page served at `/koupit-ev/` therefore wrote its cache entry under `/kupit-ev/` and clobbered the default-language entry, while its own AJAX requests looked up `/koupit-ev/` and missed every single time, pinning that language to the slow loopback permanently. `JSF_Bridge::current_path()` now prefers `$TRP_ORIGINAL_REQUEST_URI` when present.
+* Note: the two fixes compound. The second one is why the sorting bug looked domain-specific (broken on .cz, fine on .sk), .cz was pinned to the loopback and therefore always hit the first bug, while .sk sat on the fast path where sorting always worked. It is not a TranslatePress AJAX-output, LiteSpeed, or JSF-signature issue; please do not re-investigate those.
 
 = 1.3.1 =
 * Fix: `jqbeb-range-fill` no longer reports "Missing Dependencies: jet-smart-filters (missing)" in Query Monitor on pages that render no JSF filter. The script was enqueued unconditionally on `wp_enqueue_scripts` with a hard `jet-smart-filters` dependency, but JSF registers that handle late AND conditionally (`Jet_Smart_Filters_Filter_Manager::filter_scripts()` at `wp_footer` p15, early-returns when `filters_not_used` is still true). On filter-less pages the dependency was unresolvable, so WP silently dropped the script and Query Monitor flagged it on every such request. Bridge now enqueues `jqbeb-range-fill` at `wp_footer` priority 16 — after JSF's p15, before `wp_print_footer_scripts` at p20 — and skips the enqueue entirely when the `jet-smart-filters` handle is absent. No behaviour change on pages that do render filters: the dependency is registered by then, so load order is still guaranteed.

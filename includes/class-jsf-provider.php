@@ -124,7 +124,29 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			return;
 		}
 
-		$forwarded = $_REQUEST;
+		// wp_unslash is NOT cosmetic here — it is what keeps sorting alive on
+		// the loopback path.
+		//
+		// WP's wp_magic_quotes() adds one level of slashes to $_REQUEST on
+		// every request. JSF sends its sort payload as a JSON *string*
+		// (`query[_sort_standard]={"orderby":"meta_value_num",…}`), so what
+		// we read back is already `{\"orderby\":…}`. Forwarding that verbatim
+		// into the loopback URL means the loopback request's own
+		// wp_magic_quotes() slashes it a SECOND time — `{\\\"orderby\\\":…}`
+		// — and JSF's sort parser (`json_decode( wp_unslash( $value ) )` in
+		// jet-smart-filters/includes/query.php) only strips one level, so
+		// json_decode() gets `{\"orderby\":…}`, fails, and the whole sort
+		// clause is dropped with `if ( ! $data ) { continue; }`. No warning,
+		// HTTP 200, loop renders in its default order. Same trap for any
+		// filter value containing a quote or backslash (search terms,
+		// date_query payloads).
+		//
+		// urlencode_deep then makes the values URL-safe. add_query_arg does
+		// NOT encode the args it is handed (it only re-encodes what it parsed
+		// out of the base URL) and build_query() is called with $urlencode
+		// = false, so an unencoded `&` or `#` inside a filter value would
+		// truncate or split the loopback query string.
+		$forwarded = urlencode_deep( wp_unslash( $_REQUEST ) );
 		unset( $forwarded['action'] );
 
 		if ( ! empty( $forwarded['query'] ) && is_array( $forwarded['query'] ) ) {

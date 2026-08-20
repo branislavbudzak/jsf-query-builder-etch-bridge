@@ -154,8 +154,33 @@ class JSF_Bridge {
 		return 'default';
 	}
 
+	/**
+	 * Request path used to key the fast-path block cache.
+	 *
+	 * Must be the path the BROWSER sees, because JSF_Provider looks the
+	 * cache up by `wp_get_referer()` — i.e. the URL in the address bar.
+	 *
+	 * TranslatePress's SEO Pack breaks that assumption: `Slug_Manager::
+	 * translate_request_uri()` runs at `plugins_loaded` priority 3 and
+	 * OVERWRITES `$_SERVER['REQUEST_URI']` with the default-language slug,
+	 * stashing the browser's actual URI in the global
+	 * `$TRP_ORIGINAL_REQUEST_URI`. On a multi-domain setup that means a
+	 * page served at `nearcharger.cz/koupit-ev/` writes its cache entry
+	 * under `/kupit-ev/` (the Slovak slug), while the AJAX request from
+	 * that page looks for `/koupit-ev/`. The lookup misses on EVERY
+	 * request, so non-default-language pages never reach the fast path
+	 * and permanently fall back to the slow HTTP loopback — and they
+	 * clobber the default-language entry while they are at it.
+	 *
+	 * Prefer the original URI whenever TRP recorded one; fall back to
+	 * REQUEST_URI on sites without TranslatePress (where the two are the
+	 * same value anyway).
+	 */
 	public static function current_path(): string {
-		$uri  = $_SERVER['REQUEST_URI'] ?? '/';
+		$uri = $GLOBALS['TRP_ORIGINAL_REQUEST_URI'] ?? null;
+		if ( ! is_string( $uri ) || '' === $uri ) {
+			$uri = $_SERVER['REQUEST_URI'] ?? '/';
+		}
 		$path = wp_parse_url( $uri, PHP_URL_PATH );
 		return $path ?: '/';
 	}
