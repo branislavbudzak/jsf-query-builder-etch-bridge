@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.3.2
+
+### Fixed
+- **JSF sorting (and any filter value containing a quote, backslash, `&` or `#`) is no longer silently dropped on the AJAX HTTP-loopback path.** `JSF_Provider::ajax_get_content()` built the loopback URL from `$forwarded = $_REQUEST`. WP's `wp_magic_quotes()` slashes `$_REQUEST` on every request, and JSF ships its sort payload as a JSON **string** (`query[_sort_standard]={"orderby":"meta_value_num","order":"ASC","meta_key":"price_sale_gross"}`), so what we read back is already `{\"orderby\":…}`. Forwarding that verbatim meant the loopback request's own `wp_magic_quotes()` slashed it a second time, `{\\\"orderby\\\":…}`, while JSF's sort parser (`json_decode( wp_unslash( $value ) )`, jet-smart-filters/includes/query.php:681) strips exactly one level. `json_decode()` therefore received `{\"orderby\":…}`, returned `null`, and JSF's `if ( ! $data ) { continue; }` discarded the entire sort clause. No warning, no log, HTTP 200, the loop just rendered in its default order. Fixed by unslashing (`wp_unslash`) before the URL is assembled, and URL-encoding the values (`urlencode_deep`) because `add_query_arg()` does not encode the args it is handed and `build_query()` runs with `$urlencode = false`, an unencoded `&` inside a search term used to split the loopback query string and return the wrong result set too.
+- **Non-default-language pages (TranslatePress multi-domain) now reach the AJAX fast path instead of permanently falling back to the HTTP loopback.** The block-tree transient is keyed on `JSF_Bridge::current_path()`, which read `$_SERVER['REQUEST_URI']`. TranslatePress SEO Pack's `Slug_Manager::translate_request_uri()` runs at `plugins_loaded` priority 3 and **overwrites** `$_SERVER['REQUEST_URI']` with the default-language slug, stashing the browser's real URI in the global `$TRP_ORIGINAL_REQUEST_URI`. So a page served at `nearcharger.cz/koupit-ev/` wrote its cache entry under `/kupit-ev/` (the Slovak slug), and clobbered the Slovak entry doing it, while the AJAX request from that page looked the cache up by its own referer, `/koupit-ev/`. Permanent miss on every request for every translated URL. `current_path()` now prefers `$TRP_ORIGINAL_REQUEST_URI` when TRP recorded one and falls back to `REQUEST_URI` everywhere else.
+
+### Why this looked like a domain-specific bug (read this before re-investigating)
+Reported as "sorting by price doesn't work on nearcharger.cz but does on nearcharger.sk". Two days went into TranslatePress AJAX JSON rewriting, LiteSpeed JS combine, JSF signature verification and corrupted meta keys. All dead ends, and the earlier handoff's conclusion (*"the fast path is broken, the loopback works"*) was exactly **inverted**.
+
+What was actually happening: the fast path was always fine. The **loopback** was the broken one, and the only thing that decided which path a request took was whether the `jqbeb_block_<md5(path|query_id)>` transient existed for the referer's path. Because of the `current_path()` bug above, the Czech path `/koupit-ev/` **never** had an entry, so nearcharger.cz was pinned to the loopback, and therefore to the double-slashing bug, 100 % of the time, while nearcharger.sk sat on the fast path and sorted correctly. Nothing about the domain, TranslatePress's AJAX output filter, or LiteSpeed was involved; TRP mattered only because it rewrites `REQUEST_URI`.
+
+Verification note for the future: `wp transient get jqbeb_block_$(php -r 'echo md5("/your-path/|default");')` tells you which path a given page will take. A single page view warms the entry, so **loading the page yourself flips the system to the fast path** and can mask or unmask the bug mid-test.
+
 ## 1.3.1
 
 ### Fixed
