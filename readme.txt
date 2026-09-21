@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.3.2
+Stable tag: 1.3.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,10 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.3.3 =
+* Fixed JetSmartFilters numeric sorting and late meta filters on native Etch loops using JetEngine Custom Meta Tables, without requiring a JE Query Builder query.
+* Preserve existing CMT base restrictions when applying late filters or sorting. Other providers and unrelated queries remain untouched.
 
 = 1.3.2 =
 * Fix: JSF sorting (and any filter value containing a quote, backslash, `&` or `#`) is no longer silently dropped on the AJAX HTTP-loopback path. The loopback URL was built from `$_REQUEST`, which WP slashes via `wp_magic_quotes()`. JSF sends its sort payload as a JSON string, so forwarding it verbatim made the loopback request slash it a second time; JSF's parser (`json_decode( wp_unslash( $value ) )`) strips only one level, `json_decode()` returned null, and the whole sort clause was discarded with no warning and HTTP 200, the loop rendered in its default order. Values are now unslashed (`wp_unslash`) and URL-encoded (`urlencode_deep`) before the URL is assembled; `add_query_arg()` does not encode the args it is handed, so an unencoded `&` in a search term used to split the query string as well.

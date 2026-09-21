@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.3.3 - 2026-09-21
+
+### Fixed
+- Route late JetSmartFilters sorting and meta filters through JetEngine Custom Meta Tables for native Etch loops tagged `etch-loop/<query-id>`, even without a JE Query Builder query ID. Previously the p70 redirect skipped these loops, so numeric sorts could query `wp_postmeta` instead of CMT and return no results.
+- Preserve CMT base restrictions already extracted by JetEngine at p10 when applying the late p70 redirect. New CMT restrictions are intersected with the existing group, not substituted for it; an existing CMT order mapping is retained when no new CMT sort replaces it.
+- Keep the redirect scoped to bridge queries: unrelated JSF providers, main queries, and ordinary admin queries remain excluded.
+
+### Tests
+- Added `php tests/cmt-late-scope.php`: 15 regression checks covering provider scope, preserved restrictions, order mappings, and ordinary metadata.
+- Verified numeric sorting in both directions for four CMT fields on initial-page and bridge-AJAX contexts, plus combined filters, on a staging site with 116 listings.
+
 ## 1.3.2
 
 ### Fixed

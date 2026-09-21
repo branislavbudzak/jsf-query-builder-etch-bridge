@@ -199,6 +199,10 @@ assets/js/empty-state.js                Toggles `is-empty` on each `.jsf-etch-lo
 - `apply_filters('jqbeb_loop_context_block_names', ['jet-engine/data-store-button'])` — extend (v1.2.0+) the list of block names whose render is wrapped with a JE `current_object` sync to the topmost Etch loop entry. Add third-party JE add-on blocks that resolve their post via `jet_engine()->listings->data->get_current_object()`. Do NOT add Etch's native dynamic blocks (Dynamic Field / Image / Link) — they already resolve via Etch's own `DynamicContextProvider`.
 - `apply_filters('jqbeb_empty_results_payload', '<!--jqbeb:empty-results-->', $inner)` — substitute the sentinel emitted (v1.1.0+) when the AJAX-rendered loop has zero results. JSF's frontend treats `content === ''` as "no update", leaving the previous result set in the DOM; the sentinel forces a replace so the wrapper visibly clears. Replace with a styled `<div class="...">No vehicles match.</div>` placeholder for a server-rendered empty-state UI; for an Etch-authored empty-state see the `jsf-etch-empty-state` element convention (handled JS-side by `assets/js/empty-state.js`).
 
+### Native Etch CMT late sorting (v1.3.3)
+
+The p70 CMT redirect accepts either `_jqbeb_je_query_id` or the exact JSF provider prefix `etch-loop/`. Native Etch presets may already have CMT restrictions extracted by JetEngine at p10: preserve the existing same-table `custom_table_query.query`, intersect new restrictions with `AND`, and retain the previous order mapping unless a new CMT sort replaces it. Never broaden the guard to every JSF provider. Regression command: `php tests/cmt-late-scope.php`.
+
 ## Versioning workflow
 
 Plugin is on SemVer post-1.0:

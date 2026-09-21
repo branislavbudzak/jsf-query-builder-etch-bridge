@@ -419,7 +419,7 @@ class JE_Query_Builder_Bridge {
 
 	/**
 	 * Late hook (pre_get_posts priority 70) that runs the CMT redirect on
-	 * any query our bridge tagged with `_jqbeb_je_query_id`. Runs AFTER
+	 * any query tagged by either our JE bridge or our Etch JSF provider. Runs AFTER
 	 * JSF's filter merge at priority 60 so the split sees the combined
 	 * meta_query (JE base + JSF filters) and routes every CMT-stored
 	 * clause into `custom_table_query`. Bails on:
@@ -439,7 +439,12 @@ class JE_Query_Builder_Bridge {
 		if ( $query->is_main_query() ) {
 			return;
 		}
-		if ( ! $query->get( '_jqbeb_je_query_id' ) ) {
+		// Native Etch loops have no JE query ID, but JSF still merges their
+		// sort/filter fields at p60, after JetEngine's own CMT splitter (p10).
+		// Only accept our exact provider prefix; leave other JSF providers alone.
+		$provider = $query->get( 'jet_smart_filters' );
+		$is_etch_jsf = is_string( $provider ) && str_starts_with( $provider, 'etch-loop/' );
+		if ( ! $query->get( '_jqbeb_je_query_id' ) && ! $is_etch_jsf ) {
 			return;
 		}
 		$this->apply_cmt_redirect( $query );
@@ -604,10 +609,29 @@ class JE_Query_Builder_Bridge {
 			// yield SQL referencing a table that does not physically exist.
 			$db          = $manager->get_db_instance( $matching['object_slug'], $matching['fields'] ?? [] );
 			$cmt_table   = $db->table();
+			$custom_query = $partials['custom_query'] ?: [];
+			$existing_cmt = $query->get( 'custom_table_query' );
+
+			// A native Etch preset may already have been split by JE at p10.
+			// Preserve its restrictions when JSF adds another filter or sort at
+			// p60. Replacing the bundle here would silently broaden the result set.
+			if ( is_array( $existing_cmt ) && ( $existing_cmt['table'] ?? '' ) === $cmt_table ) {
+				$existing_query = $existing_cmt['query'] ?? [];
+				if ( is_array( $existing_query ) && $existing_query ) {
+					$custom_query = $custom_query
+						? [ 'relation' => 'AND', $existing_query, $custom_query ]
+						: $existing_query;
+				}
+				// Keep replacements for an earlier CMT order when JSF only adds
+				// filters. A new CMT sort deliberately replaces that earlier order.
+				if ( ! $unset_orders && ! empty( $existing_cmt['order'] ) ) {
+					$order_list = $existing_cmt['order'];
+				}
+			}
 
 			$query->set( 'custom_table_query', [
 				'table' => $cmt_table,
-				'query' => $partials['custom_query'] ?: [],
+				'query' => $custom_query,
 				'order' => $order_list,
 			] );
 			$query->set( 'meta_query', $partials['meta_query'] ?: [] );
