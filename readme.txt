@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.3.3
+Stable tag: 1.3.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,9 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.3.4 =
+* New filter `jqbeb_jsf_default_query_keys`: sites can add their own query vars to the JSF default query stored for an Etch loop. The Filter Indexer builds its option counts from these defaults on AJAX requests, so a custom flag that scopes the loop in `pre_get_posts` was previously dropped and the counts were computed without it. Default behaviour is unchanged.
 
 = 1.3.3 =
 * Fixed JetSmartFilters numeric sorting and late meta filters on native Etch loops using JetEngine Custom Meta Tables, without requiring a JE Query Builder query.

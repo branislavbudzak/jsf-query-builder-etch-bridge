@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.3.4 - 2026-09-21
+
+### Added
+- Filter `jqbeb_jsf_default_query_keys` (`JSF_Bridge::default_query_keys()`) for the allowlist of query vars stored as the Etch loop's JSF default query. The Filter Indexer rebuilds its count queries from these defaults on AJAX requests (JS sends them back in `defaults`), so a site-specific flag that scopes the loop in its own `pre_get_posts` never reached the count query. Filter-option counts could then be computed over whatever `post__in` the browser sent, while the loop itself stayed correctly scoped. Default keys are unchanged; non-string or non-array filter results fall back to the defaults.
+
+### Tests
+- Added `php tests/default-query-keys.php`: defaults unchanged, filtered key stored, deduplication, fallback on a broken filter.
+- Verified on staging with a site flag added through the filter: indexer queried IDs with 20 foreign + 5 own IDs in `post__in` return only the 5 own; an anonymous request returns none.
+
 ## 1.3.3 - 2026-09-21
 
 ### Fixed

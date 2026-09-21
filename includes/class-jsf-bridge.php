@@ -300,23 +300,9 @@ class JSF_Bridge {
 		// re-trigger JE's own pre_get_posts splitter when it instantiates
 		// a fresh WP_Query, so the CMT JOIN gets emitted there too.
 		if ( function_exists( 'jet_smart_filters' ) ) {
-			$relevant_keys = [
-				'post_type',
-				'post_status',
-				'posts_per_page',
-				'meta_query',
-				'tax_query',
-				'date_query',
-				'orderby',
-				'order',
-				'meta_key',
-				'post__in',
-				'post__not_in',
-				'paged',
-			];
 			$default_args = array_intersect_key(
 				(array) $query->query_vars,
-				array_flip( $relevant_keys )
+				array_flip( self::default_query_keys() )
 			);
 
 			// JSF's Indexer_Data::prepare_ajax_data calls
@@ -343,6 +329,45 @@ class JSF_Bridge {
 		}
 
 		$this->stack->pop();
+	}
+
+	/**
+	 * Query vars stored as the loop's JSF default query.
+	 *
+	 * The indexer builds its count queries from these defaults (sent back by
+	 * JS on AJAX requests), so a custom query var the site relies on for
+	 * scoping (e.g. a flag handled in its own `pre_get_posts`) must be listed
+	 * here, otherwise option counts are computed without it.
+	 *
+	 * @return string[]
+	 */
+	public static function default_query_keys(): array {
+		$keys = [
+			'post_type',
+			'post_status',
+			'posts_per_page',
+			'meta_query',
+			'tax_query',
+			'date_query',
+			'orderby',
+			'order',
+			'meta_key',
+			'post__in',
+			'post__not_in',
+			'paged',
+		];
+
+		/**
+		 * Filters the query vars stored as the Etch loop's JSF default query.
+		 *
+		 * @since 1.3.4
+		 * @param string[] $keys Query var names.
+		 */
+		$filtered = apply_filters( 'jqbeb_jsf_default_query_keys', $keys );
+
+		return is_array( $filtered )
+			? array_values( array_unique( array_filter( $filtered, 'is_string' ) ) )
+			: $keys;
 	}
 
 	public function on_render_block( $block_content, $block ) {
