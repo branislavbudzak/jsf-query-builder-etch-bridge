@@ -4,7 +4,9 @@ node_modules/
 vendor/
 .idea/
 .vscode/
-.claude/
+# Agent files stay local, project skills are shared (Codex reads them via .agents/skills).
+.claude/*
+!.claude/skills/
 *.log
 *.swp
 *.swo
