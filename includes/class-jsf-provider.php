@@ -65,7 +65,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		if ( '' === $flag ) {
 			return;
 		}
-		if ( strpos( $flag, 'etch-loop' ) !== 0 ) {
+		if ( strpos( $flag, 'etch-loop/' ) !== 0 ) {
 			return;
 		}
 		if ( isset( $this->applied[ $flag ] ) ) {
@@ -147,7 +147,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// = false, so an unencoded `&` or `#` inside a filter value would
 		// truncate or split the loopback query string.
 		$forwarded = urlencode_deep( wp_unslash( $_REQUEST ) );
-		unset( $forwarded['action'] );
+		unset( $forwarded['action'], $forwarded['defaults'] );
 
 		if ( ! empty( $forwarded['query'] ) && is_array( $forwarded['query'] ) ) {
 			foreach ( $forwarded['query'] as $k => $v ) {
@@ -322,11 +322,14 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// personalized content (cart, geo, A/B) disable caching entirely.
 		$cache_user_id      = is_user_logged_in() ? get_current_user_id() : 0;
 		$cache_enabled      = (bool) apply_filters( 'jqbeb_loopback_cache_enabled', true, $cache_user_id );
-		$loopback_cache_key = 'jqbeb_lb_' . md5( $url . '|u=' . $cache_user_id );
+		$loopback_cache_key = 'jqbeb_lb_' . md5( JQBEB_VERSION . '|' . $url . '|u=' . $cache_user_id );
 
 		if ( $cache_enabled ) {
 			$cached = get_transient( $loopback_cache_key );
 			if ( is_array( $cached ) && isset( $cached['inner'] ) ) {
+				if ( is_array( $cached['defaults'] ?? null ) ) {
+					JSF_Bridge::remember_defaults( $query_id, $cached['defaults'] );
+				}
 				echo $cached['inner']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — inner HTML from trusted self-loopback
 				$this->update_jsf_props(
 					$query_id,
@@ -382,8 +385,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 
 		if ( $cache_enabled ) {
 			set_transient( $loopback_cache_key, [
-				'inner' => $inner,
-				'props' => $loopback_props,
+				'inner'    => $inner,
+				'props'    => $loopback_props,
+				'defaults' => JSF_Bridge::trusted_defaults( $query_id ),
 			], MINUTE_IN_SECONDS );
 		}
 
@@ -469,6 +473,11 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			if ( ( $decoded['query_id'] ?? '' ) !== $query_id ) {
 				continue;
 			}
+			if ( is_array( $decoded['defaults'] ?? null )
+				&& is_string( $decoded['defaults_signature'] ?? null )
+				&& hash_equals( JSF_Bridge::defaults_signature( $query_id, $decoded['defaults'] ), $decoded['defaults_signature'] ) ) {
+				JSF_Bridge::remember_defaults( $query_id, $decoded['defaults'] );
+			}
 			if ( ! empty( $decoded['props'] ) && is_array( $decoded['props'] ) ) {
 				return $decoded['props'];
 			}
@@ -549,7 +558,8 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			$query->set( 'paged', $jet_paged );
 		}
 
-		$jsf_args = jet_smart_filters()->query->get_query_args();
+		// Parsed filters only. The WP_Query already contains the server baseline.
+		$jsf_args = jet_smart_filters()->query->_query;
 		if ( ! is_array( $jsf_args ) ) {
 			return;
 		}
@@ -565,18 +575,8 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			] );
 		}
 
-		foreach ( $jsf_args as $key => $value ) {
-			if ( in_array( $key, [ 'meta_query', 'tax_query', 'date_query' ], true ) ) {
-				$existing = $query->get( $key );
-				if ( ! is_array( $existing ) ) {
-					$existing = [];
-				}
-				$query->set( $key, array_merge( $existing, (array) $value ) );
-			} elseif ( $key === 'paged' ) {
-				$query->set( 'paged', absint( $value ) );
-			} else {
-				$query->set( $key, $value );
-			}
+		foreach ( JSF_Bridge::merge_filter_args( $query->query_vars, $jsf_args ) as $key => $value ) {
+			$query->set( $key, $value );
 		}
 
 		if ( Debug::pagination_enabled() ) {

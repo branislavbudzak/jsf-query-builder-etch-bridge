@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.3.4
+Stable tag: 1.3.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,11 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.3.5 =
+* Security: browser defaults, sorting JSON and plain-query parameters can no longer override the Etch loop's server-defined post status, post type or ID restrictions.
+* Indexer counts and dynamic ranges use server-generated defaults. Missing baselines return no results. Loopback defaults are authenticated and cached per user; old response caches are bypassed after upgrade.
+* Preserve base filter groups while intersecting additional filters. Sorting, pagination and search remain available.
 
 = 1.3.4 =
 * New filter `jqbeb_jsf_default_query_keys`: sites can add their own query vars to the JSF default query stored for an Etch loop. The Filter Indexer builds its option counts from these defaults on AJAX requests, so a custom flag that scopes the loop in `pre_get_posts` was previously dropped and the counts were computed without it. Default behaviour is unchanged.

@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.3.5 - 2026-09-23
+
+### Security
+- Stop accepting browser-supplied JSF defaults for the `etch-loop` provider. Capture the server-generated baseline before user filters are applied and allow only supported filter, search, sort and pagination arguments from the parsed request. This closes post-status, post-type and ID-scope overrides through defaults, sort JSON and plain-query parameters.
+- Use the same trusted baseline for indexer counts and dynamic range recalculation, including custom keys registered through `jqbeb_jsf_default_query_keys`. Requests without a rendered baseline fail closed for these auxiliary queries.
+- Carry authenticated defaults from the server-side loopback response into indexer/range processing and the existing per-user response cache. Include the plugin version in response-cache keys so vulnerable cached responses are not reused after upgrade.
+- Intersect server and client meta/tax/date groups with AND while preserving each group's internal relation. Other JSF providers remain unchanged.
+
+### Verification
+- Added `php tests/ajax-query-security.php` (requires an installed JetSmartFilters query manager, optionally supplied as the first argument). Covers the real JSF parser and bridge provider, scope overrides, server defaults, indexer/range context, loopback signatures and provider isolation.
+- Reproduced draft disclosure through an anonymous HTTP request on a local WordPress site running 1.3.4, using a temporary draft fixture. The same request with 1.3.5 stays within the public catalog.
+- Checked anonymous filtering, price sorting, pagination, empty search, indexer counts and dynamic ranges on direct rendering and cold loopback paths. Existing CMT and default-key regression suites pass.
+
+### Compatibility
+- Custom integrations that inject arbitrary query vars through plain-query or sorting payloads must move their baseline restrictions into server-side loop configuration. Controls-only requests with no server-rendered baseline return empty auxiliary results.
+- A pre-existing date-sort issue with a retained CMT `meta_key` also reproduces on 1.3.4 and is not changed by this security patch.
+
 ## 1.3.4 - 2026-09-21
 
 ### Added

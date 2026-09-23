@@ -54,6 +54,9 @@ class JSF_Bridge {
 	 */
 	public static bool $in_ajax_render = false;
 
+	/** Server-generated baselines for this request only, never browser defaults. */
+	private static array $trusted_defaults = [];
+
 	/**
 	 * Per-request memoisation for Range filter dynamic min/max recomputed
 	 * from JE Custom Meta Tables. Keyed by JSF filter post ID. Stores
@@ -76,6 +79,9 @@ class JSF_Bridge {
 
 	public function __construct() {
 		$this->stack = new State_Stack();
+
+		add_filter( 'jet-smart-filters/query/request', [ $this, 'discard_client_defaults' ], PHP_INT_MAX, 2 );
+		add_filter( 'jet-smart-filters/query/final-query', [ $this, 'secure_filter_args' ], PHP_INT_MAX );
 
 		add_filter( 'jet-smart-filters/blocks/allowed-providers', [ $this, 'add_provider_to_dropdown' ] );
 
@@ -321,14 +327,69 @@ class JSF_Bridge {
 				}
 			}
 
-			jet_smart_filters()->query->store_provider_default_query(
-				'etch-loop',
-				$default_args,
-				$query_id
-			);
+			self::remember_defaults( $query_id, $default_args );
 		}
 
 		$this->stack->pop();
+	}
+
+	/** Keep JSF's parser from merging browser-supplied defaults into clauses. */
+	public function discard_client_defaults( $request, $manager ) {
+		$current = $manager->get_current_provider();
+		if ( is_array( $current ) && ( $current['provider'] ?? '' ) === 'etch-loop' ) {
+			$request['defaults'] = [];
+		}
+		return $request;
+	}
+
+	/** Applied after parsing, including sort JSON and plain-query payloads. */
+	public function secure_filter_args( $args ) {
+		$manager = jet_smart_filters()->query;
+		$current = $manager->get_current_provider();
+		if ( ! is_array( $current ) || ( $current['provider'] ?? '' ) !== 'etch-loop' ) {
+			return $args;
+		}
+		$qid = $current['query_id'] ?? 'default';
+		// Controls-only requests without a rendered baseline must fail closed.
+		$manager->store_provider_default_query( 'etch-loop', self::trusted_defaults( $qid ), $qid, true );
+		return self::allowed_filter_args( (array) $args );
+	}
+
+	public static function allowed_filter_args( array $args ): array {
+		return array_intersect_key( $args, array_flip( [
+			'meta_query', 'tax_query', 'date_query', 's', 'orderby', 'order',
+			'meta_key', 'meta_type', 'paged', 'geo_query', 'alphabet',
+		] ) );
+	}
+
+	public static function trusted_defaults( string $query_id ): array {
+		return self::$trusted_defaults[ $query_id ] ?? [ 'post__in' => [ 0 ], 'post_status' => 'publish' ];
+	}
+
+	public static function remember_defaults( string $query_id, array $args ): void {
+		self::$trusted_defaults[ $query_id ] = $args;
+		jet_smart_filters()->query->store_provider_default_query( 'etch-loop', $args, $query_id, true );
+	}
+
+	/** Authenticate server-to-server defaults embedded in loopback HTML. */
+	public static function defaults_signature( string $query_id, array $args ): string {
+		return hash_hmac( 'sha256', wp_json_encode( [ $query_id, $args ] ), wp_salt( 'auth' ) );
+	}
+
+	/** Intersect filter groups with server restrictions, preserving each group's OR. */
+	public static function merge_filter_args( array $base, array $filters ): array {
+		foreach ( self::allowed_filter_args( $filters ) as $key => $value ) {
+			if ( in_array( $key, [ 'meta_query', 'tax_query', 'date_query' ], true ) ) {
+				if ( ! is_array( $value ) || ! $value ) {
+					continue;
+				}
+				$base[ $key ] = ! empty( $base[ $key ] ) && is_array( $base[ $key ] )
+					? [ 'relation' => 'AND', $base[ $key ], $value ] : $value;
+			} else {
+				$base[ $key ] = $value;
+			}
+		}
+		return $base;
 	}
 
 	/**
@@ -425,7 +486,13 @@ class JSF_Bridge {
 		if ( self::is_loopback() && function_exists( 'jet_smart_filters' ) ) {
 			$props = jet_smart_filters()->query->get_query_props( 'etch-loop', $query_id );
 			if ( is_array( $props ) ) {
-				$payload = [ 'query_id' => $query_id, 'props' => $props ];
+				$defaults = self::trusted_defaults( $query_id );
+				$payload  = [
+					'query_id'           => $query_id,
+					'props'              => $props,
+					'defaults'           => $defaults,
+					'defaults_signature' => self::defaults_signature( $query_id, $defaults ),
+				];
 				$encoded = base64_encode( wp_json_encode( $payload ) );
 				$block_content .= '<!--JQBEB-PROPS:' . $encoded . '-->';
 			}
@@ -801,7 +868,10 @@ class JSF_Bridge {
 			return [];
 		}
 
-		$count_args                        = $query_args;
+		$count_args                        = self::merge_filter_args(
+			self::trusted_defaults( substr( $provider_key, strlen( 'etch-loop/' ) ) ),
+			$query_args
+		);
 		$count_args['posts_per_page']      = -1;
 		$count_args['fields']              = 'ids';
 		$count_args['no_found_rows']       = true;
@@ -1460,7 +1530,7 @@ class JSF_Bridge {
 	 *   3. Snapshot `_query` directly (it's public).
 	 *   4. Restore `$_REQUEST` and re-parse so JSF state is intact for any
 	 *      code after this hook.
-	 *   5. Compose final args = defaults + parsed-clauses (deep-merged on
+	 *   5. Compose final args = server defaults + parsed clauses (AND on
 	 *      meta/tax/date_query).
 	 *
 	 * Self-exclusion only strips `_meta_query_{var}` / `_meta_query_{var}|{suffix}`
@@ -1476,10 +1546,8 @@ class JSF_Bridge {
 			return null;
 		}
 
-		$defaults = $_REQUEST['defaults'] ?? [];
-		if ( ! is_array( $defaults ) ) {
-			$defaults = [];
-		}
+		$current  = jet_smart_filters()->query->get_current_provider();
+		$defaults = self::trusted_defaults( $current['query_id'] ?? 'default' );
 
 		$saved_request_query = $_REQUEST['query'] ?? null;
 		$filtered_query      = is_array( $saved_request_query ) ? $saved_request_query : [];
@@ -1505,64 +1573,9 @@ class JSF_Bridge {
 			jet_smart_filters()->query->get_query_from_request();
 		}
 
-		// Compose: defaults form the base; parsed clauses layer on top
-		// with per-clause deep merge for the three multi-clause args.
-		$final = [];
-		foreach ( [ 'post_type', 'post_status', 'post__in', 'post__not_in' ] as $passthrough ) {
-			if ( isset( $defaults[ $passthrough ] ) ) {
-				$final[ $passthrough ] = $defaults[ $passthrough ];
-			}
-		}
-
-		foreach ( [ 'meta_query', 'tax_query', 'date_query' ] as $multi ) {
-			$base   = ( ! empty( $defaults[ $multi ] ) && is_array( $defaults[ $multi ] ) )
-				? $defaults[ $multi ]
-				: [];
-			$layer  = ( ! empty( $parsed[ $multi ] ) && is_array( $parsed[ $multi ] ) )
-				? $parsed[ $multi ]
-				: [];
-			$merged = $this->merge_query_clauses( $base, $layer );
-			if ( ! empty( $merged ) ) {
-				$final[ $multi ] = $merged;
-			}
-		}
-
-		// Honour search if the JSF parser produced one.
-		if ( ! empty( $parsed['s'] ) ) {
-			$final['s'] = $parsed['s'];
-		}
-
+		$final = self::merge_filter_args( $defaults, $parsed );
+		unset( $final['jet_smart_filters'] );
 		return $final;
-	}
-
-	/**
-	 * Combine two `meta_query` / `tax_query` / `date_query`-shaped
-	 * clause arrays AND-merging the clauses, retaining the highest-priority
-	 * relation between them. WP_Query interprets numerically-keyed entries
-	 * as nested clauses with implicit AND.
-	 *
-	 * @param array<int|string, mixed> $base
-	 * @param array<int|string, mixed> $layer
-	 * @return array<int|string, mixed>
-	 */
-	private function merge_query_clauses( array $base, array $layer ): array {
-		$out = [];
-		foreach ( $base as $k => $v ) {
-			if ( $k === 'relation' ) {
-				continue;
-			}
-			$out[] = $v;
-		}
-		foreach ( $layer as $k => $v ) {
-			if ( $k === 'relation' ) {
-				continue;
-			}
-			$out[] = $v;
-		}
-		if ( count( $out ) > 1 ) {
-			$out['relation'] = 'AND';
-		}
-		return $out;
 	}
 
 	/**
