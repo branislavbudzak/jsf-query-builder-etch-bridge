@@ -1,58 +1,49 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for AI coding agents (Claude Code, Codex) working in this repository. `AGENTS.md` is a symlink to this file; edit this file only. Deep dives live in `docs/` and are listed under "Read before editing" below; load them only when the task touches that area.
 
 ## What this plugin does
 
 Three independent bridges that drive Etch's native Query Loop block from external query systems, plus a small per-block context sync:
 
-1. **JSF bridge** — registers an `Etch Loop` content provider for JetSmartFilters. Filter / pagination / sort blocks can drive any Etch loop (initial-load + AJAX), with multi-loop support via `jsf-etch-q-{slug}` classes, an indexer for per-option counts, and a `[jsf_etch_count]` shortcode.
-
-2. **JE Query Builder bridge** — lets a JetEngine Query Builder query become the data source for an Etch loop. Supports query types: `posts`, `users`, `terms`, `Merged_Query` (with base types posts / users / terms), `SQL_Query` (target type inferred from `cast_object_to` or `je-as-{type}` wrapper hint), and `Data_Stores_Query` (target type inferred from the store's post-vs-user setting).
-
-3. **JE loop-context bridge** (v1.2.0+) — small `pre_render_block` / `render_block` pair that fixes JE blocks resolving their post via `jet_engine()->listings->data->get_current_object()` when rendered inside an Etch loop. Default scope: `jet-engine/data-store-button`. See "JE loop-context bridge" section below.
+1. **JSF bridge** - registers an `Etch Loop` content provider for JetSmartFilters. Filter / pagination / sort blocks can drive any Etch loop (initial-load + AJAX), with multi-loop support via `jsf-etch-q-{slug}` classes, an indexer for per-option counts, and a `[jsf_etch_count]` shortcode.
+2. **JE Query Builder bridge** - lets a JetEngine Query Builder query become the data source for an Etch loop. Query types: `posts`, `users`, `terms`, `Merged_Query` (base types posts / users / terms), `SQL_Query` (target type from `cast_object_to` or `je-as-{type}` wrapper hint), `Data_Stores_Query` (target type from the store's post-vs-user setting).
+3. **JE loop-context bridge** (v1.2.0+) - `pre_render_block` / `render_block` pair that makes JE blocks resolving their post via `jet_engine()->listings->data->get_current_object()` see the Etch loop card instead of the host page. Default scope: `jet-engine/data-store-button`.
 
 Each bridge runs only if its target plugin is active. Etch is the only hard dependency for any of them to do anything useful.
 
-## Architecture (must read before editing)
+## Read before editing
+
+| Touching | Read first |
+|---|---|
+| JSF AJAX render, loopback, transient cache, main-query context restore, TranslatePress, indexer default queries, range filters | [`docs/jsf-ajax-path.md`](docs/jsf-ajax-path.md) |
+| JE Query Builder dispatch (pagination order, Merged / SQL / Data Store, re-entrancy guard, CMT redirect, CMT indexer) or anything relying on Etch block / loop-handler internals | [`docs/etch-je-internals.md`](docs/etch-je-internals.md) |
+| JE loop-context bridge, `jqbeb_loop_context_block_names` | [`docs/je-loop-context-bridge.md`](docs/je-loop-context-bridge.md) |
+| Release, tag, ZIP | project skill `release` in `.claude/skills/release/` (Codex: `.agents/skills/release`) |
+
+## Architecture essentials
 
 ### Bridge instantiation timing
 
-`Plugin::boot()` runs at `plugins_loaded` (default priority).
+`Plugin::boot()` runs at `plugins_loaded` (default priority). At that point all plugin main files are included, but JE component classes are NOT loaded yet (they appear at `init -1`).
 
-- **JSF bridge** is instantiated immediately at `plugins_loaded`. Critical: JSF fires `jet-smart-filters/providers/register` at **`init` priority `-998`**, so if `JSF_Bridge` weren't ready before that hook, the `Etch Loop` provider would never register.
-- **JE bridge** is deferred to `init` priority `0` via `Plugin::maybe_boot_je_bridge()`. **JetEngine registers `\Jet_Engine\Query_Builder\Manager` via its components-manager at `init` priority `-1`** (`includes/core/components-manager.php`), so at `plugins_loaded` the class doesn't yet exist and `class_exists('\Jet_Engine\Query_Builder\Manager')` returns false. Booting the JE bridge at `plugins_loaded` would silently no-op (this was the v0.6.0 bug). All of the JE bridge's hooks (`pre_render_block`, `pre_get_posts`, `pre_user_query`, `pre_get_terms`) fire well after `init`, so `init p0` registration is safe.
-- **JE loop-context bridge** is instantiated at `plugins_loaded` gated on `function_exists( 'jet_engine' )`. The hooks (`pre_render_block` p5, `render_block` p5) fire on block render which is post-`init`, so JE's components / `listings->data` are fully ready by then. Each callback also does its own defensive checks for the Etch `DynamicContextProvider` class before calling it. No `init` deferral needed because the bridge does NOT depend on JE Query Builder being loaded — only on `jet_engine()` (the main accessor function, defined in JE's main plugin file at plugin-load time) and `jet_engine()->listings->data` (initialized by `init -1` via JE's components-manager, before any block render fires).
-
-At `plugins_loaded`, all plugin **main files** have been included (so JSF function `jet_smart_filters` exists), but JE component classes are NOT yet loaded — they appear at `init -1`.
+- **JSF bridge** is instantiated immediately at `plugins_loaded`. JSF fires `jet-smart-filters/providers/register` at **`init` priority `-998`**; if `JSF_Bridge` were not ready before that, the `Etch Loop` provider would never register.
+- **JE bridge** is deferred to `init` priority `0` via `Plugin::maybe_boot_je_bridge()`. JetEngine registers `\Jet_Engine\Query_Builder\Manager` at `init -1`, so `class_exists()` is false at `plugins_loaded` and booting there silently no-ops (the v0.6.0 bug). All its hooks fire well after `init`.
+- **JE loop-context bridge** is instantiated at `plugins_loaded`, gated on `function_exists( 'jet_engine' )`. Its hooks fire on block render (post-`init`), when `jet_engine()->listings->data` is ready. It does not depend on JE Query Builder, so no `init` deferral.
 
 ### State_Stack pattern
 
-Both bridges use a per-bridge `State_Stack` instance (`includes/class-state-stack.php`) keyed by Etch wrapper class. The flow per bridge:
+Both query bridges use their own `State_Stack` instance (`includes/class-state-stack.php`) keyed by Etch wrapper class:
 
-1. `pre_render_block` (priority 4 / 5) → push wrapper's `query_id` to the stack
-2. The matching pre-query hook (`pre_get_posts` / `pre_user_query` / `pre_get_terms`) → read top of stack, mutate query, pop
-3. `render_block` (priority 999) → safety-net pop if no matching hook fired (e.g. wrapper without inner loop, or JE query type mismatched the Etch preset type)
+1. `pre_render_block` (p4 / p5) pushes the wrapper's `query_id`.
+2. The matching pre-query hook (`pre_get_posts` / `pre_user_query` / `pre_get_terms`) reads the top, mutates the query, pops.
+3. `render_block` p999 is a safety-net pop if no matching hook fired (wrapper without inner loop, or JE query type mismatched the Etch preset type).
 
-The two bridges have independent State_Stacks → no cross-contamination when both classes appear on the same wrapper.
+Independent stacks mean no cross-contamination when both classes sit on the same wrapper.
 
-### JSF AJAX path: direct in-process render (v0.10.0+)
+### JSF AJAX in one paragraph
 
-JSF AJAX (filter / pagination / sort clicks) does NOT do an HTTP loopback to the original page URL. Instead, the bridge caches the parsed `etch/element` wrapper block tree in a transient at page render time (`JSF_Bridge::on_render_block` → `set_transient( JSF_Bridge::block_cache_key( $url_path, $query_id ), [block, post_id, context], HOUR_IN_SECONDS )`), and `JSF_Provider::ajax_get_content` retrieves it and renders it in-process via `render_block()`. Mirrors what JetEngine's listing-grid provider does (`get_render_instance('listing-grid', $attrs)->render()`).
-
-Critical mechanism: all bridge hooks (`pre_render_block`, `pre_get_posts`, `render_block`, JE bridge equivalents) bail on `wp_doing_ajax() || is_admin()` BY DEFAULT. During in-process AJAX render they must fire normally (so the inner WP_Query gets re-tagged and JSF's provider hook can re-apply paged + filter args). The bypass is the static flag `JSF_Bridge::$in_ajax_render` — set true around the `render_block()` call, hooks check `! self::$in_ajax_render && ( wp_doing_ajax() || is_admin() )` to early-return. JE_Bridge reads the same flag (both classes are in the `JQBEB` namespace, so unqualified reference resolves).
-
-**Main-query context restoration (v1.3.0+)**: the AJAX fast path runs inside `admin-ajax.php` where the global `$wp_query` is the admin-ajax catch-all — no `is_tax()` / `is_post_type_archive()` flags, no `queried_object`, no archive-related `query_vars`. Pre-1.3.0 this meant any JE Query Builder query whose Dynamic Args read `get_queried_object()` / `is_*()` (e.g. a brand archive query bound to "current queried term") silently collapsed to "no filter" on AJAX and returned the full unfiltered universe — page 1 showed N brand-scoped listings, page 2 click returned page 2 of the full unfiltered set (much larger), so the user saw unrelated items in place of the next page. Fix: `JSF_Bridge::on_render_block` snapshots the main-query state into a `context` field (conditional-tag flags allowlist + `query_vars` allowlist + `queried_object` descriptor `{ type, id, taxonomy? }`), and `JSF_Provider::ajax_get_content` rebuilds a synthetic `WP_Query` via `JSF_Bridge::build_context_query()` and swaps it into BOTH `$GLOBALS['wp_query']` and `$wp_the_query` around the `render_block()` call. Globals are snapshotted before swap and restored in `finally`. The fake `WP_Query` is constructed via `new WP_Query()` (no args → skips `query()` → no SQL fires); `is_*` properties are set directly on the object, `query_vars` via `$query->set()`, `queried_object` resolved fresh via `get_post()` / `get_term()` / `get_user_by()` (so a stale cache after a term rename picks up new data). The 1.2.x transient shape without `context` is honoured via the legacy singular-only `post_id` / `setup_postdata` path. Covers archive, taxonomy, CPT-archive, AND singular pages where JE Dynamic Args read `get_queried_object()`. The fake-query swap does NOT make `is_main_query()` on the loop's inner WP_Query return true — that WP_Query is a fresh `new WP_Query` instance from Etch's loop handler, not the global, regardless of which object sits in `$GLOBALS['wp_query']`.
-
-**Cache miss fallback**: if the transient is gone (expired, never rendered for this URL+query_id, or extract failed), the provider falls through to the original HTTP loopback path (`wp_remote_get`). Same code as before — no regression for any working path. The loopback path naturally has correct `$wp_query` state because WP routes the request through `parse_request` → `query_posts` on the loopback URL.
-
-**Loopback request slashing (v1.3.2)**: `ajax_get_content` builds the loopback URL from `$_REQUEST`, which WP has already slash-escaped via `wp_magic_quotes()`. It MUST be run through `wp_unslash()` first, otherwise the loopback request slashes it a second time and every JSON-valued JSF query var (`_sort_*` is a JSON string, `_date_query` likewise) fails `json_decode( wp_unslash( … ) )` in JSF's parser, which then silently `continue`s past the clause. Symptom: filters work, sorting does not, HTTP 200, no log line anywhere. The values also need `urlencode_deep()` because `add_query_arg()` does NOT encode the args it is given (`build_query()` runs with `$urlencode = false`), so a bare `&` or `#` in a search term truncates or splits the query string.
-
-**Cache key vs TranslatePress (v1.3.2)**: `JSF_Bridge::current_path()` keys the transient on the path the BROWSER sees, because the read side looks it up by `wp_get_referer()`. TranslatePress SEO Pack's `Slug_Manager::translate_request_uri()` (`plugins_loaded` p3) overwrites `$_SERVER['REQUEST_URI']` with the default-language slug and stashes the real one in the global `$TRP_ORIGINAL_REQUEST_URI`, so `current_path()` prefers that global when set. Without it, every translated URL writes under the default-language key (clobbering it) and misses its own lookup forever, pinning that language to the slow loopback. Any other plugin that rewrites `REQUEST_URI` before block render will need the same treatment.
-
-**Which path did a request take?** `wp transient get jqbeb_block_$(php -r 'echo md5("/your-path/|default");')`. Present means fast path, absent means loopback. Loading the page yourself warms it, so a single manual page view flips the system to the fast path mid-test.
-
-**Cache invalidation**: 1-hour TTL. Block edits in the editor are not auto-flushed; manual `wp transient delete --all` or wait 1h. Production-tier cache strategy if needed: hash `etch_loops` option into the cache key. Terms / posts referenced by `context.queried_object` are resolved at restore time (not snapshot time), so renames pick up automatically without cache flush.
+JSF AJAX does not loop back over HTTP by default: the wrapper block tree is cached in a transient at page render and re-rendered in-process via `render_block()` (`JSF_Bridge::$in_ajax_render` lets the hooks run during AJAX). The main-query state (`is_*` flags, `query_vars`, `queried_object`) is snapshotted at render and swapped back into `$wp_query` / `$wp_the_query` around the AJAX render (v1.3.0+). On cache miss it falls back to the HTTP loopback. Details and traps: `docs/jsf-ajax-path.md`.
 
 ### Hook priority ladder (when both bridges are active on the same wrapper)
 
@@ -66,11 +57,12 @@ pre_render_block  p5     JSF bridge captures jsf-etch-loop wrapper;
                           Etch loop iteration
 pre_get_posts     p40    JE wholesale-replaces WP_Query args
 pre_get_posts     p50    JSF tags the query (jet_smart_filters = etch-loop/{id})
+                          and stores the provider default query for the indexer
 pre_get_posts     p60    JSF merges filter args on top of JE base
 pre_get_posts     p70    JE bridge CMT redirect (splits the merged meta_query
-                          and orderby — sees JSF filter additions because it
-                          fires after p60). Only acts on queries marked with
-                          _jqbeb_je_query_id.
+                          and orderby - sees JSF filter additions because it
+                          fires after p60). Acts on queries marked with
+                          _jqbeb_je_query_id or the etch-loop/ JSF provider.
 pre_user_query    p10    JE bridge (Users base type)
 pre_get_terms     p10    JE bridge (Terms base type)
 render_block      p5     JE loop-context bridge restores the stashed
@@ -79,97 +71,29 @@ render_block      p999   safety-net pop for both bridges
 wp_footer         p5     JSF bridge outputs window.JQBEBData (BEFORE wp_print_footer_scripts at p20)
 ```
 
-## Critical knowledge about Etch internals
+### Rules that bite most often (full list in `docs/etch-je-internals.md`)
 
-These were the foot-guns discovered during initial development. All have to remain true for the bridge to keep working — verify if Etch is updated.
-
-1. **`etch/element` block stores classes only in `attrs.attributes.class`.** The block declares both `'className' => false` AND `'customClassName' => false` ([etch/classes/Blocks/ElementBlock/ElementBlock.php:66-67](../etch/classes/Blocks/ElementBlock/ElementBlock.php)), so the standard Gutenberg `attrs.className` field is never populated. Don't add a fallback.
-
-2. **Etch's loop handlers instantiate `new WP_Query / WP_User_Query / WP_Term_Query` directly** (`etch/classes/Blocks/Global/Utilities/LoopHandlers/`). WP core fires `pre_get_posts` / `pre_user_query` / `pre_get_terms` from inside those constructors / methods, so our hooks fire normally — no Etch-specific filter is needed.
-
-3. **Etch's terms / users handlers expect full `WP_Term` / `WP_User` instances.** They check `$item instanceof WP_Term` etc. If the JE query returns IDs only, the loop renders empty cards. The bridge defensively forces `query_vars['fields'] = 'all'` after merging JE args for users / terms.
-
-4. **`pre_user_query` fires inside `WP_User_Query::__construct()` (via `prepare_query()`)** — by the time `get_results()` runs the SQL has already executed. Our action listener must already be registered at construction time (it is, because `JE_Query_Builder_Bridge::__construct()` runs at `plugins_loaded`).
-
-## Critical knowledge about JE Query Builder
-
-1. **`Manager::instance()->get_query_by_id($id)` accepts BOTH numeric IDs and string slugs** — slugs are resolved via the `custom_query_ids_mapping`. The `je-q-{id}` wrapper class supports both forms.
-
-2. **`Posts_Query::get_query_args()` runs the args through the `jet-engine/query-builder/types/posts-query/args` filter pipeline** — consumers don't need to apply it manually.
-
-3. **Pagination is NOT automatic from `$_REQUEST`.** Consumers must call `$je_query->set_filtered_prop('_page', $page)` before calling `get_query_args()` / `get_items()`. The bridge does this from `$_REQUEST['jet_paged'|'paged'|'pagenum']`. **CRITICAL ORDER**: on a freshly-fetched JE query (`final_query === null`), `setup_query()` must run BEFORE `set_filtered_prop( '_page', N )`. `Posts_Query::set_filtered_prop` writes `_page` DIRECTLY into `$this->final_query['paged'] / ['page']` (`jet-engine/.../queries/posts.php:320`); on a null `final_query` that assignment AUTOVIVIFIES the property as a degenerate 2-key array, and the subsequent `get_query_args()` sees a non-null `final_query` and SKIPS `setup_query()` — so the configured post_type / meta_query / tax_query / orderby never enter `final_query` and the returned args lose everything except the page. Bridge mitigates by calling `get_query_args()` ONCE first (lazy setup_query), THEN `set_filtered_prop`, THEN `get_query_args()` again to read populated args. Pattern is consistent across `get_args_with_pagination()` and `extract_ids_from_get_items()` (Merged / SQL / Data Store path).
-
-4. **`Merged_Query` reports its `$query_type` as its `base_query_type`** (e.g. `'posts'` for a Merged of Posts queries). This means a Merged query LOOKS like a regular Posts query to type dispatch — `instanceof Merged_Query` MUST be checked first, otherwise calling `get_query_args()` on it returns a useless `array_merge` of all sub-queries' args. Merged is handled via a different path: pre-fetch `get_items()`, extract IDs, feed via `post__in` / `include`.
-
-5. **`SQL_Query` reports `$query_type === 'sql'`** which doesn't match any Etch loop preset directly. The bridge infers target type from (in priority order): wrapper class hint `je-as-{posts|users|terms}` → `cast_object_to` config (`WP_Post` / `WP_User` / `WP_Term`) → default `posts`. Same predefined-IDs path as Merged: `get_items()` → extract IDs → `post__in` / `include`. ID extraction handles WP_Post/WP_User/WP_Term instances AND raw stdClass rows from `$wpdb->get_results()` via heuristic column lookup (`ID` / `id` / `post_id` / `user_id` / `term_id`).
-
-6. **`Data_Stores_Query` reports `$query_type === 'data-stores-query'`** and wraps a Posts or Users sub-query that filters by store contents. Target type detection reads `final_query['store_slug']` and calls `Module::stores->get_store($slug)->is_user_store()` — cheap, no inner query materialisation. **Avoid calling `Data_Stores_Query::get_query_type()` directly** — it triggers `get_current_query()` which materialises the inner WP_Query / WP_User_Query (expensive) just to determine the type.
-
-7. **Re-entrancy guard.** Merged sub-queries, SQL `$wpdb->get_results()`, and Data Store inner queries fire `pre_get_posts` / `pre_user_query` / `pre_get_terms` from inside `extract_ids_from_get_items()`. Without a guard, our handlers would recurse on the same JE query (potentially infinite, definitely corrupting). The bridge sets `$this->in_extraction = true` around any JE method call that may instantiate WP_*_Query (`get_items()`, `get_query_args()`, `get_data_store_target_type()` setup), and dispatchers early-return when the flag is set. Wrap with `try/finally` so an exception cannot leave the flag stuck.
-
-8. **Data Store cache reset for `je-jsf-stack` mode.** `Data_Stores_Query` caches its inner query in `$current_query`. If we set `final_query` overrides AFTER `get_current_query()` has already materialised, the overrides have no effect. The bridge calls `$je_query->reset_query()` after applying overrides so the next `get_items()` rebuilds with our values.
-
-9. **CMT (Custom Meta Tables) timing trap.** JetEngine's `\Jet_Engine\CPT\Custom_Tables\Manager` registers a GLOBAL `posts_clauses` filter at priority 10 that emits a custom-table JOIN/WHERE/ORDER iff the WP_Query carries a `custom_table_query` query var. JE populates that var via its OWN `pre_get_posts` handler at priority 10 (one closure per CMT post type, in `Query::hook_query_handlers()` → `jet-engine/.../post-types/custom-tables/query.php:354`), which calls `exctract_meta_query_partials()` to split `meta_query` into custom-table vs `wp_postmeta` clauses. Our bridge applies JE args at priority 40 — strictly AFTER JE's splitter. The splitter therefore sees Etch's preset (no CMT meta_query), does nothing, and `custom_table_query` stays unset; the global `posts_clauses` filter then emits no CMT SQL and the resulting query searches `wp_postmeta` for fields that are not there. Result: 0 rows even though JE's own `get_items()` returns full data. The bridge's `apply_cmt_redirect()` mirrors JE's split logic inline AFTER our wholesale arg replacement; the actual hook attaches at `pre_get_posts` priority **70** (`apply_cmt_redirect_late`), strictly AFTER JSF's filter merge at priority 60, so the split sees the combined meta_query and routes both JE-base and JSF-filter CMT clauses into `custom_table_query`. The CMT table name MUST come from `Manager::get_db_instance($slug, $fields)->table()` (which prefixes with `$wpdb->prefix`), NOT `Manager::get_table_name($slug)` which returns the unprefixed slug-derived name and would emit a JOIN to a non-existent table. Tightly coupled to JE internals — public API surface we depend on is `Manager::instance()`, `Manager::$storages`, `Manager::get_db_instance()`, and the `custom_table_query` query var contract (`{table, query, order}`).
-
-10. **CMT for JSF Indexer.** The bridge's `compute_indexed_counts` (in `JSF_Bridge`) generates per-option counts by querying `wp_postmeta` directly. For loops whose post type uses Custom Storage, the meta values live in the CMT table (column-per-field, `object_ID` FK), not `wp_postmeta`. The indexer detects CMT context via `JSF_Bridge::detect_cmt_for_args()` and routes meta_query keys accordingly: keys whose name appears in `Manager::$storages[*]['fields']` are queried as `SELECT \`{col}\` AS meta_value, COUNT(DISTINCT object_ID) FROM \`{cmt_table}\` ...`; keys outside the CMT field list still go to `wp_postmeta`. Multi-key filters (comma-separated keys representing OR'd meta_keys) split between the two paths and counts are merged into a single value→count bucket per filter. Column names are interpolated directly into SQL because `$wpdb->prepare()` cannot bind identifiers; trust source is membership in the registered fields list, sanitised again via `sanitize_cmt_column()` (defence-in-depth strip to `[A-Za-z0-9_]`).
-
-## JE loop-context bridge (v1.2.0+)
-
-Lives in [`includes/class-je-loop-context-bridge.php`](includes/class-je-loop-context-bridge.php). Solves a narrow but invisible-by-default bug: **JE blocks that read `jet_engine()->listings->data->get_current_object()` to resolve their target post operate on the host page, not on the loop card, when rendered inside an Etch loop.**
-
-### Loop-source array shape (NOT a WP_Post)
-
-A subtle but critical detail: Etch's loop handlers ([etch/.../LoopHandlers/WpQueryLoopHandler.php](../etch/classes/Blocks/Global/Utilities/LoopHandlers/WpQueryLoopHandler.php:49-61)) do NOT push raw `WP_Post` / `WP_User` / `WP_Term` instances onto the `DynamicContextProvider` stack — they push the output of `get_dynamic_data($post)`, which is an **associative array** of post properties merged with `wp_parse_args($data, get_object_vars($post))`. So the loop entry's `get_source()` returns an array like `[ 'id' => 1234, 'ID' => 1234, 'title' => '…', 'post_type' => 'ad-listing', 'post_status' => '…', … ]`, NOT a `WP_Post`. The bridge has to detect the array shape and resolve back to an object via `get_post( $id )` / `get_user_by( 'id', $id )` / `get_term( $id )`. Type discrimination is by shape markers: post → `post_type`/`post_status`/`post_author`, user → `user_login`/`user_email`, term → `taxonomy`/`term_taxonomy_id`. If a future Etch version starts pushing raw instances instead, the bridge's `instanceof` short-circuit at the top of `resolve_loop_source()` handles that too — no migration needed.
-
-### Why JE Listing Grid works but Etch loops don't
-
-JE's `listings->data` manager hooks `the_post` ([jet-engine/.../listings/data.php:96](../jet-engine/includes/components/listings/data.php) → `maybe_set_current_object`) and calls `set_current_object($post)` for each loop iteration. JE Listing Grid runs a normal `WP_Query` + `$query->the_post()` loop, so the hook fires per card and JE's `current_object` tracks the loop. Etch loops do NOT call `setup_postdata()` and do NOT fire `the_post` — [`Etch\Blocks\LoopBlock\LoopBlock::render_block`](../etch/classes/Blocks/LoopBlock/LoopBlock.php) (lines 120-152) pushes each item onto its own `DynamicContextProvider` stack and renders inner blocks via `render_block()`. JE's hook never fires, JE's `current_object` stays pinned to the page object resolved before the Etch loop began, and every nested JE Data Store Button (etc.) gets the page's ID.
-
-The Etch + JE Dynamic Field / Dynamic Image / Dynamic Link blocks are unaffected because Etch's own dynamic-data resolution reads from the `DynamicContextProvider` stack, not from JE's `current_object`. Only blocks that bypass Etch's dynamic-data layer and call `jet_engine()->listings->data->get_current_object()` directly are broken — the Data Store Button is the canonical example.
-
-### Mechanism
-
-For any block whose name is in `target_block_names` (default `['jet-engine/data-store-button']`, filterable via `jqbeb_loop_context_block_names`):
-
-1. `pre_render_block` priority 5 — walk `DynamicContextProvider::get_stack()->all()` from top, find the topmost `DynamicContentEntry` with `get_type() === 'loop'`, read its source via `get_source()`. If the source is a `WP_Post` / `WP_User` / `WP_Term` (or a numeric ID, treated as a post), stash `jet_engine()->listings->data->get_current_object()` on the bridge's `stash_stack` and call `set_current_object($loop_item)`.
-2. `render_block` priority 5 — if `stash_stack` is non-empty, pop one entry and restore via `set_current_object($previous)`.
-
-The stash is shaped as a stack (PHP array used as LIFO via `array_push` + `array_pop`) so nested supported blocks restore in correct order. `array_reverse` walk on the context stack picks the innermost loop on nested Etch loops.
-
-### Why this isn't `pre_render_block` priority 10 or higher
-
-The bridge is positioned ahead of any block-level filter that might use JE's `current_object` to render. Priority 5 mirrors the existing JSF bridge's wrapper-capture priority and keeps the relative ordering consistent. Filter hook execution order within the same priority is registration-order, so the JE Query Builder bridge's `on_pre_render_block` at priority 4 still runs first when both classes touch the same block — which is desired (Query Builder configures loop args before we sync card context).
-
-### Extending to more blocks
-
-Add the block name to the filter:
-
-```php
-add_filter( 'jqbeb_loop_context_block_names', function ( $names ) {
-    $names[] = 'jet-engine/some-other-block';
-    return $names;
-} );
-```
-
-DO NOT add Etch's own dynamic blocks here — Etch already resolves them via `DynamicContextProvider`. DO NOT add JE Dynamic Field / Image / Link blocks — same reason; adding them would be a double-resolution and may surface stale `current_object` state to other JE side-effects.
-
-### Limitations
-
-- **`object_context` override on the Data Store Button** is bypassed. The button supports `object_context` other than `'default_object'` (e.g. `'current_user'`, `'current_post_author'`, `'queried_user'`), each branching into different `listings->data` accessors. Our fix only intercepts the default path. If users select a non-default context, behaviour falls through to JE's existing resolution (typically against the page-level state).
-- **Shortcode form is NOT covered.** JE also exposes the Data Store Button as a shortcode (`[jet_engine_data_store_button …]`) that renders via `Jet_Engine_Render_Base::do_action()` without going through the block render path. Etch loops only render blocks, so the shortcode path is irrelevant here — but anyone porting this fix to a different builder where shortcodes might appear inside the loop should remember it.
-
-11. **JSF provider default-query registration.** The Filter Indexer is **gated by `jet_smart_filters()->query->get_default_queries()`** — JSF iterates that array in `Indexer_Data::prepare_localized_data` and SKIPS providers without an entry. JS receives no `jetFiltersIndexedData` for skipped providers, and AJAX filter changes send empty `query_args` to the indexer endpoint (it counts against an empty post_type → wrong / zero counts). All built-in JSF providers register themselves at render time via `jet_smart_filters()->query->store_provider_default_query( $provider_id, $query_args, $query_id )`. Our bridge calls this from `JSF_Bridge::tag_query_for_jsf()` at `pre_get_posts` priority 50 — after JE bridge p40 has applied its base args, before JSF's filter merge at p60 — passing an allowlisted subset of `$query->query_vars` (post_type, post_status, posts_per_page, meta_query, tax_query, date_query, orderby, order, meta_key, post__in, post__not_in, paged), extendable via the `jqbeb_jsf_default_query_keys` filter (v1.3.4+). A site flag that scopes the loop in its own `pre_get_posts` MUST be added there, otherwise AJAX indexer counts run without it (nearcharger-core-logic adds `nc_light`). Storing the full query_vars would also work but bloats the localized JS payload with internal WP_Query defaults (error, m, p, attachment_id, etc.). The CMT split has not yet run at p50, so the stored meta_query is still in raw JE form; that's intentional — the indexer's `count_query` instantiates a fresh `WP_Query` which re-fires JE's pre_get_posts splitter at p10 inside that fresh query, so the CMT JOIN still gets emitted there.
+- `etch/element` stores classes only in `attrs.attributes.class`. No `attrs.className` fallback.
+- Etch terms / users loop handlers need full `WP_Term` / `WP_User` objects; the bridge forces `fields = 'all'`.
+- JE pagination: call `get_query_args()` once BEFORE `set_filtered_prop( '_page', N )`, otherwise `final_query` autovivifies and loses post_type / meta_query / orderby.
+- Check `instanceof Merged_Query` FIRST; it reports its base type and looks like a Posts query.
+- Never call `Data_Stores_Query::get_query_type()` for type detection (materialises the inner query).
+- Keep the `in_extraction` re-entrancy guard in `try/finally` around any JE call that may instantiate `WP_*_Query`.
+- CMT table names come from `Manager::get_db_instance(...)->table()`, never `Manager::get_table_name()`.
+- Native Etch CMT late sorting (v1.3.3): the p70 redirect accepts `_jqbeb_je_query_id` or the exact JSF provider prefix `etch-loop/`. Preserve an existing same-table `custom_table_query.query`, intersect new restrictions with `AND`, keep the previous order mapping unless a new CMT sort replaces it. Never broaden the guard to every JSF provider. Regression: `php tests/cmt-late-scope.php`.
+- Any site flag that scopes the loop in its own `pre_get_posts` must be added via `jqbeb_jsf_default_query_keys`, or AJAX indexer counts run without it (nearcharger-core-logic adds `nc_light`).
 
 ## Wrapper class conventions
 
 | Class | Required for |
 |---|---|
-| `jsf-etch-loop` | JSF bridge — marks the immediate parent of loop cards (pagination/sort blocks must be OUTSIDE) |
-| `jsf-etch-q-{slug}` | JSF bridge — disambiguates multi-loop pages; matches JSF block's "Query ID" setting |
-| `je-etch-loop` | JE bridge — marks any Etch loop wrapper to use a JE query as data source |
-| `je-q-{id}` | JE bridge — numeric JE query ID OR custom query_id slug |
-| `je-as-{posts\|users\|terms}` | JE bridge — explicit target type override for SQL queries (also works as override for any JE query if `cast_object_to` inference is wrong) |
-| `je-jsf-stack` | JE bridge — opt-in JSF compatibility for Merged / SQL: bridge fetches the FULL JE result set (overrides `max_items_per_page` / `limit_per_page` / `limit` / `_page` to 0/1) and does NOT force-disable WP_Query pagination flags. Required to make JSF filters / pagination / `[jsf_etch_count]` work for Merged / SQL Posts loops. Must be combined with `jsf-etch-loop` to actually engage JSF. |
+| `jsf-etch-loop` | JSF bridge - marks the immediate parent of loop cards (pagination/sort blocks must be OUTSIDE) |
+| `jsf-etch-q-{slug}` | JSF bridge - disambiguates multi-loop pages; matches JSF block's "Query ID" setting |
+| `je-etch-loop` | JE bridge - marks any Etch loop wrapper to use a JE query as data source |
+| `je-q-{id}` | JE bridge - numeric JE query ID OR custom query_id slug |
+| `je-as-{posts\|users\|terms}` | JE bridge - explicit target type override for SQL queries (also overrides a wrong `cast_object_to` inference for any JE query) |
+| `je-jsf-stack` | JE bridge - opt-in JSF compatibility for Merged / SQL: fetches the FULL JE result set (overrides `max_items_per_page` / `limit_per_page` / `limit` / `_page` to 0/1) and does NOT force-disable WP_Query pagination flags. Required for JSF filters / pagination / `[jsf_etch_count]` on Merged / SQL Posts loops. Combine with `jsf-etch-loop`. |
+| `jsf-etch-empty-state` | Etch element shown (`is-active`) when the paired loop is empty; pair via `data-for-query-id="<slug>"` on multi-loop pages, otherwise nearest `.jsf-etch-loop` ancestor |
 
 Both bridges can coexist on the same wrapper. Class extraction reads only `attrs.attributes.class`.
 
@@ -180,47 +104,61 @@ jsf-query-builder-etch-bridge.php       Plugin header + constants + bootstrap
 includes/
   class-plugin.php                      DI bootstrap, dependency probes, conditional bridge loading
   class-state-stack.php                 push/pop helper used by both bridges
-  class-jsf-bridge.php                  JSF integration (Snippet 1)
-  class-jsf-provider.php                Jet_Smart_Filters_Provider_Base subclass + AJAX loopback
-  class-je-query-builder-bridge.php     JE integration: type dispatch (Posts / Users / Terms / Merged / SQL / Data Stores) + CMT redirect helpers (apply_cmt_redirect / split_meta_query_for_cmt)
-  class-je-loop-context-bridge.php      v1.2.0+: per-block sync of jet_engine()->listings->data->current_object to the topmost Etch DynamicContextProvider loop entry, so JE Data Store Button (default scope) gets the loop card's post ID instead of the host page's. Extensible via jqbeb_loop_context_block_names filter.
+  class-jsf-bridge.php                  JSF integration: wrapper capture, block cache, context snapshot, indexer, range filters
+  class-jsf-provider.php                Jet_Smart_Filters_Provider_Base subclass, AJAX fast path + loopback fallback
+  class-je-query-builder-bridge.php     JE type dispatch (Posts / Users / Terms / Merged / SQL / Data Stores) + CMT redirect
+  class-je-loop-context-bridge.php      per-block current_object sync to the topmost Etch loop entry
   class-shortcode.php                   [jsf_etch_count] shortcode
   class-admin-page.php                  Settings → JSF Etch Bridge (English docs, conditional sections)
-assets/js/count.js                      [jsf_etch_count] live updater (subscribes to JSF event bus)
-assets/js/range-fill.js                 Page-load fill for JSF Range filter editable text inputs. Bridges JSF 3.8.0.1+ async dynamic-range pattern (data-dynamic-range-pending + clearPendingDynamicRangeDisplay) by calling `updateRangeBounds()` directly on `jet-smart-filters/inited` for our `etch-loop` provider; legacy `input`-event dispatch path retained for JSF 3.7.x.
-assets/js/empty-state.js                Toggles `is-empty` on each `.jsf-etch-loop` wrapper and `is-active` on every `.jsf-etch-empty-state` Etch element paired with the wrapper, so users can author a custom empty-state directly in Etch (text, card, image, anything). Default-hides empty-state elements via injected CSS until JS reveals them. Pairing: `data-for-query-id="<slug>"` on multi-loop pages, otherwise nearest `.jsf-etch-loop` ancestor walk.
+  class-debug.php                       pagination diagnostics to the browser console, off unless define( 'JQBEB_DEBUG_PAGINATION', true )
+assets/js/count.js                      [jsf_etch_count] live updater (JSF event bus)
+assets/js/range-fill.js                 page-load fill for JSF Range filter text inputs (JSF 3.8.0.1+ async dynamic range, legacy 3.7.x path kept)
+assets/js/empty-state.js                toggles is-empty on .jsf-etch-loop and is-active on paired .jsf-etch-empty-state elements
+assets/js/debug.js                      console consumer for class-debug.php buffers (page load + JSF AJAX)
+bin/build-release-zip.sh                whitelisted release ZIP (plugin file, readme.txt, includes, assets only)
+tests/                                  standalone PHP regressions, run with `php tests/<name>.php`
+docs/                                   agent deep dives (not shipped in the ZIP)
 ```
 
 ## Filterable behaviour
 
-- `apply_filters('jqbeb_loopback_sslverify', false)` — set to `true` (or `__return_true`) on production for proper SSL verification on the JSF AJAX self-loopback.
-- `apply_filters('jqbeb_loopback_cache_enabled', true, $cache_user_id)` — disable the 60-second rendered-HTML loopback cache (return `false`) on sites with anonymous personalized content (cart, geo, A/B). Cache is per-user-ID; safe for typical role-/login-/membership-gated content.
-- `apply_filters('jqbeb_range_cmt_override_enabled', true, $args, $instance)` — opt-out of the v1.0.2 JSF Range filter min/max recompute against JE CMT tables. Return `false` to fall back to JSF's default `wp_postmeta` query (which yields empty bounds for CMT fields).
-- `apply_filters('jqbeb_loop_context_block_names', ['jet-engine/data-store-button'])` — extend (v1.2.0+) the list of block names whose render is wrapped with a JE `current_object` sync to the topmost Etch loop entry. Add third-party JE add-on blocks that resolve their post via `jet_engine()->listings->data->get_current_object()`. Do NOT add Etch's native dynamic blocks (Dynamic Field / Image / Link) — they already resolve via Etch's own `DynamicContextProvider`.
-- `apply_filters('jqbeb_empty_results_payload', '<!--jqbeb:empty-results-->', $inner)` — substitute the sentinel emitted (v1.1.0+) when the AJAX-rendered loop has zero results. JSF's frontend treats `content === ''` as "no update", leaving the previous result set in the DOM; the sentinel forces a replace so the wrapper visibly clears. Replace with a styled `<div class="...">No vehicles match.</div>` placeholder for a server-rendered empty-state UI; for an Etch-authored empty-state see the `jsf-etch-empty-state` element convention (handled JS-side by `assets/js/empty-state.js`).
+- `jqbeb_loopback_sslverify` (default `false`) - set `true` on production for SSL verification on the JSF AJAX self-loopback.
+- `jqbeb_loopback_cache_enabled` (`true`, `$cache_user_id`) - disable the 60-second per-user rendered-HTML loopback cache on sites with anonymous personalized content (cart, geo, A/B).
+- `jqbeb_jsf_default_query_keys` (v1.3.4+) - allowlist of `query_vars` stored as the JSF provider default query for the indexer.
+- `jqbeb_range_cmt_override_enabled` (`true`, `$args`, `$instance`) - opt out of the v1.0.2 CMT-aware Range filter min/max recompute.
+- `jqbeb_loop_context_block_names` (`['jet-engine/data-store-button']`) - blocks whose render gets the JE `current_object` sync. Never add Etch's own dynamic blocks or JE Dynamic Field / Image / Link.
+- `jqbeb_empty_results_payload` (`'<!--jqbeb:empty-results-->'`, `$inner`) - sentinel for zero-result AJAX renders; JSF treats `''` as "no update", so the sentinel forces the wrapper to clear.
+- `jqbeb_empty_state_default_hide_enabled` (`true`) - disable the injected CSS that hides `.jsf-etch-empty-state:not(.is-active)` and ship your own.
+- `jqbeb_count_late_substitution_enabled` (`true`) - disable the output buffer that fills in `[jsf_etch_count]` values late on the front end.
 
-### Native Etch CMT late sorting (v1.3.3)
+## Limitations to remember
 
-The p70 CMT redirect accepts either `_jqbeb_je_query_id` or the exact JSF provider prefix `etch-loop/`. Native Etch presets may already have CMT restrictions extracted by JetEngine at p10: preserve the existing same-table `custom_table_query.query`, intersect new restrictions with `AND`, and retain the previous order mapping unless a new CMT sort replaces it. Never broaden the guard to every JSF provider. Regression command: `php tests/cmt-late-scope.php`.
+- **JE Repeater / Comments / Current_WP_Query types are NOT supported.** Etch has no compatible loop handler; it would need an Etch core change (filter on `LoopHandlerManager::get_loop_preset_data()`). Don't reflect / monkey-patch.
+- **JSF integration is Posts-only.** Users / Terms loops would need a `Jet_Smart_Filters_Provider_Base` subclass per type.
+- **JSF + Merged / SQL / Data Store works ONLY in `je-jsf-stack` mode.** Cost: full JE fetch on every render.
+- **SQL queries must return a recognisable ID column** (`ID` / `id` / `post_id` / `user_id` / `term_id`); other rows are silently skipped.
+- **Only `loopId`-mode Etch loops are bridged.** `target` / expression mode bypasses `WP_Query`.
+- **Indexer counts skip range filters**; only `tax_query` and `meta_query`. CMT is supported (v0.7.0+), CCT is not.
+- **CMT redirect is Posts-only** (JE core registers Custom_Tables handlers only for `object_type='post'`).
+- **Loop-context bridge** ignores non-default `object_context` on the Data Store Button and does not cover the shortcode form.
+
+## Security stance
+
+- **Browser-supplied JSF `defaults` are never trusted (1.3.5+).** For the `etch-loop` provider `discard_client_defaults()` empties them; the baseline is what the server captured while rendering the loop (`remember_defaults()` at `pre_get_posts` p50, or the HMAC-signed payload from the loopback), and only whitelisted filter args (`allowed_filter_args()`: meta/tax/date query, search, sort, paged, geo, alphabet) come from the request. Auxiliary queries (indexer counts, dynamic range) without a rendered baseline fail closed to `post__in => [0]`. Anything that can widen post status, post type or the ID scope must come from the server. Regression: `php tests/ajax-query-security.php`.
+- Loopback AJAX forwards all cookies via `wp_remote_get()` so authenticated content resolves. SSL verification is off by default (local-dev compat) but filterable.
+- `<!--JQBEB-PROPS:...-->` markers are stripped from the AJAX response before send; they only carry parent → loopback props.
 
 ## Versioning workflow
 
-Plugin is on SemVer post-1.0:
+SemVer post-1.0: patch `fix:`, minor `feat:`, major documents migration in CHANGELOG and readme.txt. When bumping, update **all five** in the same commit:
 
-- **Patch (bug fix)**: `x.y.z` → `x.y.(z+1)` with `fix:` commit prefix.
-- **Minor (feature, backwards-compatible)**: `x.y.z` → `x.(y+1).0` with `feat:` commit prefix.
-- **Major (breaking change)**: `x.y.z` → `(x+1).0.0`. Document migration in CHANGELOG and readme.txt.
-
-When bumping, update **all five** in the same commit:
 1. Plugin header `Version:` in `jsf-query-builder-etch-bridge.php`
-2. `JQBEB_VERSION` constant in the same file
+2. `JQBEB_VERSION` constant in the same file (also cache-busts `assets/js/*`)
 3. `readme.txt` `Stable tag:` and `== Changelog ==` entry
 4. `CHANGELOG.md` (Keep a Changelog format)
-5. Tag with `git tag v{x.y.z}` and push (`git push origin main v{x.y.z}`)
+5. Tag `git tag v{x.y.z}` and push (`git push origin main v{x.y.z}`)
 
-The full release procedure (tests, tag, whitelisted ZIP via `bin/build-release-zip.sh`, GitHub Release) is the project skill `release` in `.claude/skills/release/`. The ZIP is the only way the plugin reaches a site, so never zip the working copy by hand.
-
-Cache-bust note: `assets/js/count.js` is enqueued with `JQBEB_VERSION` as its version param. Bumping the constant invalidates the browser cache automatically.
+The full release procedure (tests, tag, whitelisted ZIP via `bin/build-release-zip.sh`, GitHub Release) is the project skill `release`. The ZIP is the only way the plugin reaches a site, so never zip the working copy by hand.
 
 ## Common commands
 
@@ -228,41 +166,9 @@ Cache-bust note: `assets/js/count.js` is enqueued with `JQBEB_VERSION` as its ve
 # Lint all PHP files (does not require WP)
 for f in jsf-query-builder-etch-bridge.php includes/*.php; do php -l "$f"; done
 
-# Git workflow (no remote pre-push hooks here; main = production-ish)
-git status
-git log --oneline
-git push origin main
+# Standalone regressions
+for t in tests/*.php; do php "$t"; done
+
+# Which JSF AJAX path did a request take? Present = fast path, absent = loopback
+wp transient get jqbeb_block_$(php -r 'echo md5("/your-path/|default");')
 ```
-
-## Limitations to remember
-
-- **JE Repeater / Comments / Current_WP_Query types are NOT supported.** Etch has no compatible loop handler. Adding them would require an Etch core change (filter on `LoopHandlerManager::get_loop_preset_data()`) — see plan history. Don't try to add them via reflection / monkey-patch.
-- **JSF integration is Posts-only.** JSF filters / pagination / sort do not drive Users / Terms loops. Adding it would require subclassing `Jet_Smart_Filters_Provider_Base` once per type with separate selectors.
-- **JSF + Merged / SQL / Data Store works ONLY in `je-jsf-stack` mode.** Default behaviour fetches a JE-paginated slice (one page) and force-disables WP_Query pagination, which breaks JSF and the count shortcode. With `je-jsf-stack`, the bridge fetches the FULL JE filter set, leaves WP_Query pagination flags alone, and lets WP_Query / JSF natively paginate the `post__in` subset. Cost: full fetch on every render — fine for moderate sets, expensive for large ones.
-- **SQL queries must return a recognisable ID column.** The heuristic looks for `ID` / `id` / `post_id` / `user_id` / `term_id`. Rows without one are silently skipped during ID extraction.
-- **Only `loopId`-mode Etch loops are bridged.** `target` / expression mode bypasses `WP_Query` entirely.
-- **Filter Indexer counts skip range filters** (per-option counts not generated for sliders). Only `tax_query` and `meta_query` are supported. JetEngine CMT (Custom Meta Tables) IS supported as of v0.7.0 — the indexer detects CMT context via `Manager::$storages` and queries the custom table directly when the filter's meta_key matches a registered CMT field. CCT (separate `wp_jet_cct_*` tables / no `wp_posts` link) is NOT directly supported because JSF cannot drive a non-WP-Query loop; bridge users would have to query the CCT as a JE SQL_Query and feed IDs.
-- **Range filter live recalc on AJAX filter changes (v1.0.3+).** JSF 3.8.0+ pushes `dynamic_range[<bucket>][]=<query_var>` per pending range filter into every AJAX request and reads `response.dynamic_range[<query_var>] = { min, max }` from the provider's reply to call `updateRangeBounds()`. Bridge hooks `jet-smart-filters/render/ajax/data` (`add_dynamic_range_to_ajax_response`) and per-var:
-  1. Builds the current filter context as a WP_Query — base from the trusted server defaults captured during render (`JSF_Bridge::trusted_defaults()`, since 1.3.5; before that `$_REQUEST['defaults']`), JSF clauses from `$_REQUEST['query']`, **excluding the var's own `_meta_query_<var>` / `_meta_query_<var>|<suffix>` clause** (otherwise the slider would collapse to the user's current selection and become impossible to widen).
-  2. Runs the query for IDs only.
-  3. Feeds them as `t.object_ID IN (…)` into `compute_cmt_range_min_max($targets, $ids)` (the v1.0.2 helper, public, with the new optional second arg).
-  4. Injects `dynamic_range[<var>] = { min, max }` into the response.
-  Var list is read from **`php://input`** because JSF's bucket-key shape (`dynamic_range[[object Object],apply_min_max_callback][]=…`) collapses under PHP's `parse_str` — the literal `[`/`]`/`,` inside the key truncates everything to a single `array[ '[object Object' => '<last var>' ]` and the other vars are silently lost. Walking the raw body recovers all of them. The "current context" args are sourced via JSF's own `get_query_from_request()` (with `$_REQUEST['query']` temporarily mutated to drop self-var keys, then restored) and merged onto the trusted defaults via `JSF_Bridge::merge_filter_args()` (AND of server and filter groups) — JSF's own `get_query_args()` does only a shallow `array_merge` that would drop the JE-base tax_query / meta_query.
-- **Range filter dynamic min/max IS CMT-aware (v1.0.2+).** Hooks `jet-smart-filters/filter-instance/args` priority 20. Accepts two `_source_callback` values:
-  1. **`jet_smart_filters_meta_values`** — JSF's built-in "Get from Post Meta by query meta key". Queries `wp_postmeta` and returns NULL for CMT fields → JSF falls back to defaults. Bridge detects CMT field membership across all `Manager::$storages` (any storage matched).
-  2. **`jet_engine_custom_storage_post_{slug}`** — JE-NATIVE per-CMT callback registered by `\Jet_Engine\CPT\Custom_Tables\Query::register_range_min_max_callback`. UI label is "{Post Type}: Get from custom storage by query meta key". JE's own callback (custom-tables/query.php:73) queries the right table BUT can return `[ 'min' => null, 'max' => null ]` when the SQL has no rows or all-NULL aggregates; JSF then drops to manual fallback because `isset($data['min'])` is FALSE on NULL. Bridge pins the lookup to the storage slug encoded in the callback name.
-  Bridge SQL: `SELECT MIN(FLOOR(t.{col})), MAX(CEILING(t.{col})) FROM {cmt_table} t INNER JOIN wp_posts p ON p.ID = t.object_ID WHERE t.{col} IS NOT NULL AND t.{col} <> '' AND p.post_type = %s AND p.post_status IN (%s,...)`. Statuses come from `apply_filters('jet-smart-filters/dynamic-min-max/search-statuses', ['publish'])`. Step-rounding mirrors `Jet_Smart_Filters_Range_Filter::max_value_for_current_step`. Per-request memoised by filter ID (hit + miss). Provider-agnostic — gates on data-shape, not `content_provider`. Opt-out via `apply_filters( 'jqbeb_range_cmt_override_enabled', true, $args, $instance )`. Per-option indexer counts for sliders remain out of scope.
-- **CMT redirect is Posts-only.** JE registers Custom_Tables Query handlers only for `object_type='post'` in core; user / term object types are gated behind a do_action that needs an add-on. The bridge therefore only mirrors the splitter for posts. Users / Terms loops with CMT would need extension via the same pattern.
-
-## Security stance
-
-- **Browser-supplied JSF `defaults` are never trusted (1.3.5+).** For the `etch-loop` provider `discard_client_defaults()` empties them, the baseline is what the server captured while rendering the loop (`remember_defaults()` at `pre_get_posts` p50, or the HMAC-signed payload from the loopback), and only whitelisted filter args (`allowed_filter_args()`: meta/tax/date query, search, sort, paged, geo, alphabet) come from the request. Auxiliary queries (indexer counts, dynamic range) without a rendered baseline fail closed to `post__in => [0]`. Keep new query features inside this model: anything that can widen post status, post type or the ID scope must come from the server.
-- Loopback AJAX forwards all cookies via `wp_remote_get()` so authenticated content is correctly resolved. SSL verification is off by default (local-dev compat) but filterable.
-- `<!--JQBEB-PROPS:...-->` markers are stripped from the AJAX response inner HTML before send, so they never reach the browser DOM. Only used internally for parent → loopback prop transport.
-
-## When to reach for an agent
-
-The bridge is a self-contained ~1,500 LOC plugin. Most edits are local. Reach for an Explore agent only when:
-
-- Verifying Etch / JSF / JE internal behaviour after a major upstream version bump (the integration depends on internal classes / hooks that Etch / JSF / JE could break without notice).
-- Tracing why a `jsf-etch-loop` wrapper isn't AJAX-updating — the loopback path goes through DOMDocument + XPath which is fragile against unbalanced HTML.
