@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.3.6 - 2026-09-29
+
+### Fixed
+- Complete JSF geo queries on Custom Storage map fields at `pre_get_posts` p75. The JetEngine Location & Distance filter sends only `latitude` / `longitude` / `distance` / `units`. For a post type with Custom Storage, JetEngine then read the missing `raw_field` without isset (`map-field-storage.php:489`, one PHP warning per posts_* clause, around 50 per filtered page on nearcharger.sk) and `Posts_Custom_Storage::resolve_geo_query()` dropped the query because `lat_field` / `lng_field` were not set. The result was a `wp_postmeta` JOIN on `latitude` / `longitude` with no rows. The bridge now fills `raw_field`, `lat_field` and `lng_field` from the post type's single map field, so JetEngine's own custom-storage geo SQL runs, including `geo_query_distance` and `orderby => distance`.
+- The completion is not limited to Etch loops. JSF indexer and count queries (`Indexer_Data::get_queried_ids()`, `JSF_Bridge::compute_indexed_counts()`) carry the same geo filter without a provider tag and would otherwise count 0 for every option.
+
+### Compatibility
+- Geo queries with explicit `lat_field` / `lng_field` (JetEngine Query Builder geosearch) or a `raw_field` naming another field are left untouched. Post types with two or more map fields are skipped as ambiguous.
+- Sites that worked around the bug with their own haversine SQL and returned `false` from the JetEngine geo filters keep working unchanged; the workaround can be removed after the update.
+
+### Verification
+- Added `php tests/cmt-geo-query.php` (13 cases: JSF shape, empty or partial `raw_field`, explicit fields, other field, untagged indexer query, ID-based JE loop, post type without storage, unparsed string, two map fields, missing columns, sanitized column names).
+- On staging.nearcharger.sk (JetEngine 3.8.15.3, JetSmartFilters 3.8.5.1, PHP 8.4): with the site workaround disabled, the location filter returns the same listings, card distances and indexer counts as the workaround, with 0 warnings on page load and on a JSF AJAX filter request. With the workaround still active, also 0 warnings.
+
 ## 1.3.5 - 2026-09-23
 
 ### Security

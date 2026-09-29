@@ -110,6 +110,11 @@ class JE_Query_Builder_Bridge {
 		// any JSF filter on a CMT field. Running at p70 ensures the split
 		// is over the FINAL meta_query (JE base + JSF filters merged).
 		add_action( 'pre_get_posts', [ $this, 'apply_cmt_redirect_late' ], 70 );
+
+		// Geo queries on CMT map fields, after JSF's p60 merge. Not scoped to
+		// Etch loops: JSF indexer and count queries carry the same geo filter
+		// without a provider tag, see complete_cmt_geo_query().
+		add_action( 'pre_get_posts', [ $this, 'complete_geo_query_late' ], 75 );
 	}
 
 	public static function get_classes( array $block ): string {
@@ -640,6 +645,111 @@ class JE_Query_Builder_Bridge {
 			}
 			$query->set( '_jqbeb_je_cmt', $matching['object_slug'] );
 		}
+	}
+
+	/**
+	 * `pre_get_posts` p75: complete a geo query on a CMT post type.
+	 *
+	 * Runs for every query, not only Etch loops, because the geo filter is
+	 * copied into auxiliary queries without the `etch-loop/` tag (JSF
+	 * `Indexer_Data::get_queried_ids()`, `JSF_Bridge::compute_indexed_counts()`,
+	 * site-specific indexer hooks). Left incomplete, those count queries fall
+	 * back to a `wp_postmeta` JOIN and report 0 for every option.
+	 * Safe for other queries: an incomplete geo query on a CMT post type never
+	 * matches anything, and complete ones (JE Query Builder geosearch) are
+	 * left alone.
+	 */
+	public function complete_geo_query_late( \WP_Query $query ): void {
+		$geo_query = $query->get( 'geo_query' );
+		if ( ! is_array( $geo_query ) || ! $geo_query ) {
+			return;
+		}
+		if ( ! class_exists( '\Jet_Engine\CPT\Custom_Tables\Manager' ) ) {
+			return;
+		}
+		$manager = \Jet_Engine\CPT\Custom_Tables\Manager::instance();
+		if ( empty( $manager->storages ) ) {
+			return;
+		}
+
+		$post_types = $query->get( '_jqbeb_je_original_post_type' );
+		if ( ! $post_types ) {
+			$post_types = $query->get( 'post_type' );
+		}
+		$post_types = (array) $post_types;
+
+		foreach ( $manager->storages as $storage ) {
+			if ( ( $storage['object_type'] ?? '' ) === 'post'
+				&& in_array( $storage['object_slug'] ?? '', $post_types, true )
+			) {
+				$this->complete_cmt_geo_query( $query, $storage, $manager );
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Point a JSF geo query at the CMT map field columns.
+	 *
+	 * The JetEngine Location & Distance filter sends only
+	 * `latitude` / `longitude` / `distance` / `units` (plus `address`). JSF
+	 * merges that into the Etch loop at p60, so no JetEngine Query Builder
+	 * geosearch setup ever names the field. JetEngine then:
+	 *
+	 *   - reads `$geo_query['raw_field']` without isset() in
+	 *     `Map_Field_Storage::check_raw_field()` (one PHP warning per
+	 *     posts_* clause filter, ~50 per filtered page), and
+	 *   - even with `raw_field` set, `Posts_Custom_Storage::resolve_geo_query()`
+	 *     drops the geo query unless `lat_field` / `lng_field` are set too,
+	 *     so the filter silently falls back to a `wp_postmeta` JOIN that
+	 *     finds nothing.
+	 *
+	 * Completing all three keys routes the query through JetEngine's own
+	 * custom-storage geo path (distance WHERE, `geo_query_distance` field,
+	 * `orderby => distance`). Only acts when the post type has exactly one
+	 * map field; with more we cannot tell which one the filter meant.
+	 * Explicit `lat_field` / `lng_field`, or a `raw_field` naming a different
+	 * field, are left alone.
+	 *
+	 * @param array<string,mixed> $storage One entry of `Manager::$storages`.
+	 */
+	private function complete_cmt_geo_query( \WP_Query $query, array $storage, $manager ): void {
+		$geo_query = $query->get( 'geo_query' );
+		if ( ! is_array( $geo_query ) || ! $geo_query ) {
+			return;
+		}
+		if ( ! empty( $geo_query['lat_field'] ) && ! empty( $geo_query['lng_field'] ) ) {
+			return;
+		}
+
+		$map_fields = [];
+		foreach ( (array) ( $storage['raw_fields'] ?? [] ) as $field ) {
+			if ( is_array( $field ) && 'map' === ( $field['type'] ?? '' ) && ! empty( $field['name'] ) ) {
+				$map_fields[] = (string) $field['name'];
+			}
+		}
+		if ( 1 !== count( $map_fields ) ) {
+			return;
+		}
+
+		$raw_field = $map_fields[0];
+		if ( ! empty( $geo_query['raw_field'] ) && $geo_query['raw_field'] !== $raw_field ) {
+			return;
+		}
+
+		// Column names follow JE's Map_Field_Storage::register_storage_fields().
+		$column = method_exists( $manager, 'sanitize_field_name' )
+			? (string) $manager->sanitize_field_name( $raw_field )
+			: $raw_field;
+		$fields = (array) ( $storage['fields'] ?? [] );
+		if ( ! in_array( $column . '_lat', $fields, true ) || ! in_array( $column . '_lng', $fields, true ) ) {
+			return;
+		}
+
+		$geo_query['raw_field'] = $raw_field;
+		$geo_query['lat_field'] = $column . '_lat';
+		$geo_query['lng_field'] = $column . '_lng';
+		$query->set( 'geo_query', $geo_query );
 	}
 
 	/**

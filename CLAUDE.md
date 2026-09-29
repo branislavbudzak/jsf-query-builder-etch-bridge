@@ -63,6 +63,10 @@ pre_get_posts     p70    JE bridge CMT redirect (splits the merged meta_query
                           and orderby - sees JSF filter additions because it
                           fires after p60). Acts on queries marked with
                           _jqbeb_je_query_id or the etch-loop/ JSF provider.
+pre_get_posts     p75    JE bridge completes a geo_query on a CMT map field
+                          (raw_field + lat_field + lng_field). Every query,
+                          not only Etch loops: JSF indexer / count queries
+                          carry the geo filter without a provider tag.
 pre_user_query    p10    JE bridge (Users base type)
 pre_get_terms     p10    JE bridge (Terms base type)
 render_block      p5     JE loop-context bridge restores the stashed
@@ -81,6 +85,7 @@ wp_footer         p5     JSF bridge outputs window.JQBEBData (BEFORE wp_print_fo
 - Keep the `in_extraction` re-entrancy guard in `try/finally` around any JE call that may instantiate `WP_*_Query`.
 - CMT table names come from `Manager::get_db_instance(...)->table()`, never `Manager::get_table_name()`.
 - Native Etch CMT late sorting (v1.3.3): the p70 redirect accepts `_jqbeb_je_query_id` or the exact JSF provider prefix `etch-loop/`. Preserve an existing same-table `custom_table_query.query`, intersect new restrictions with `AND`, keep the previous order mapping unless a new CMT sort replaces it. Never broaden the guard to every JSF provider. Regression: `php tests/cmt-late-scope.php`.
+- CMT geo queries (v1.3.6): the JetEngine Location & Distance filter sends only `latitude` / `longitude` / `distance` / `units`. On a CMT post type JetEngine then warns on the missing `raw_field` (`map-field-storage.php:489`, ~50 per filtered page) and drops the geo query unless `lat_field` / `lng_field` are set too, falling back to a `wp_postmeta` JOIN that matches nothing. `complete_geo_query_late()` (p75) fills all three from the post type's single map field. Unlike the p70 CMT redirect this one is deliberately NOT scoped to `etch-loop/`, because the indexer count queries need it as well. Regression: `php tests/cmt-geo-query.php`.
 - Any site flag that scopes the loop in its own `pre_get_posts` must be added via `jqbeb_jsf_default_query_keys`, or AJAX indexer counts run without it (nearcharger-core-logic adds `nc_light`).
 
 ## Wrapper class conventions

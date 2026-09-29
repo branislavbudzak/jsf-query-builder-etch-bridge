@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.3.5
+Stable tag: 1.3.6
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,10 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.3.6 =
+* Fix: the JetEngine Location & Distance filter on a post type with Custom Storage now uses JetEngine's own custom-storage geo query. Previously JetEngine logged an "Undefined array key raw_field" warning per clause and fell back to a wp_postmeta JOIN that matched nothing.
+* Distance ordering (`orderby => distance`) and indexer counts work with a location filter on Custom Storage post types.
 
 = 1.3.5 =
 * Security: browser defaults, sorting JSON and plain-query parameters can no longer override the Etch loop's server-defined post status, post type or ID restrictions.

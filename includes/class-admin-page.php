@@ -448,6 +448,7 @@ je-etch-loop je-q-partner-listings    <?php esc_html_e( '— Query ID slug', 'js
 					<tr><td><code>pre_get_posts</code> p50</td><td><?php esc_html_e( 'JSF bridge tags the query for filter merging + registers the default query.', 'jsf-query-builder-etch-bridge' ); ?></td></tr>
 					<tr><td><code>pre_get_posts</code> p60</td><td><?php esc_html_e( 'JSF merges user filter args on top of JE base.', 'jsf-query-builder-etch-bridge' ); ?></td></tr>
 					<tr><td><code>pre_get_posts</code> p70</td><td><?php esc_html_e( 'JE bridge CMT redirect (splits the merged meta_query if post type uses Custom Storage).', 'jsf-query-builder-etch-bridge' ); ?></td></tr>
+					<tr><td><code>pre_get_posts</code> p75</td><td><?php esc_html_e( 'JE bridge completes a geo_query on a Custom Storage map field (Location & Distance filter).', 'jsf-query-builder-etch-bridge' ); ?></td></tr>
 				</table>
 			</div>
 
