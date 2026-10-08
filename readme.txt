@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.3.6
+Stable tag: 1.3.7
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,10 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.3.7 =
+* Fix: JetSmartFilters filters on JetEngine relations (`related_children*<id>` / `related_parents*<id>`) now restrict an Etch loop. Previously the bridge's security whitelist dropped the post IDs JetEngine resolved, so selecting a related item returned the unfiltered listing. The relation is now resolved on the server and intersected with the loop's own scope, and invalid values return an empty result instead of every item.
+* Fix: per-option counts of relation filters come from the JetEngine relation table instead of post meta.
 
 = 1.3.6 =
 * Fix: the JetEngine Location & Distance filter on a post type with Custom Storage now uses JetEngine's own custom-storage geo query. Previously JetEngine logged an "Undefined array key raw_field" warning per clause and fell back to a wp_postmeta JOIN that matched nothing.

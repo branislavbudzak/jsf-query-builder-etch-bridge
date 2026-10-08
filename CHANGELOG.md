@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.3.7 - 2026-10-08
+
+### Fixed
+- JetSmartFilters filters on JetEngine relations (`related_children*<id>` / `related_parents*<id>`) now restrict an Etch loop on the `etch-loop` provider. JetEngine translates such a filter into `post__in` at `jet-smart-filters/query/final-query` p-10, and the bridge's client whitelist (1.3.5) drops every `post__in` because the browser can send one too, so selecting a related item returned the unfiltered listing. The new `Relation_Filters` takes the relation clauses out of `meta_query` at p-20, before JetEngine sees them, and `merge_filter_args()` resolves them through the JetEngine relation API and intersects the result with the trusted baseline. Results, indexer counts and dynamic range all use that one path.
+- Per-option counts of relation filters were read from `wp_postmeta`, where relation data does not live. They now come from one `GROUP BY` on the relation table (also a separate `wp_jet_rel_<id>` table), limited to the filtered result.
+
+### Security
+- Relation filters can only narrow the server baseline. Invalid input never widens the result: `0`, empty, malformed or negative values (JetEngine's `get_children( 0 )` drops the parent condition), an unknown relation, a relation whose filtered side is another post type, a missing relations component, or a clause shape that cannot be expressed as an ID restriction all give `post__in = [0]`. A relation plan sent by the client is discarded.
+- The baseline `post__not_in` is subtracted from the relation result, because WP_Query ignores `post__not_in` once `post__in` is set. The baseline order is kept for `orderby => post__in`.
+
+### Known limits
+- Counts are not self-excluding: in an OR group, picking one value shows 0 for the others. Hide counts on such filters until an opt-in self-exclusion exists.
+
+### Verification
+- Added `php tests/relation-filters.php` (39 cases, real JetSmartFilters parser with stubbed WP and JetEngine relations), mutation-checked.
+- On the Poctivá poživeň staging (JetEngine 3.8.16, JetSmartFilters 3.8.6, Etch 1.6.8, WooCommerce 11.1.2), relation 16 dodávateľ → product with 413 links in `wp_jet_rel_16`, as an anonymous visitor: one supplier, two suppliers (identical ID set to SQL), supplier + taxonomy, an empty combination with the empty state, reset, URL restore, invalid values and a spoofed `post__in` in the URL. Per-option counts on first load and after an AJAX filter matched SQL.
+
 ## 1.3.6 - 2026-09-29
 
 ### Fixed
