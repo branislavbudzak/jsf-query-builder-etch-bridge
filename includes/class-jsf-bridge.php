@@ -81,6 +81,8 @@ class JSF_Bridge {
 		$this->stack = new State_Stack();
 
 		add_filter( 'jet-smart-filters/query/request', [ $this, 'discard_client_defaults' ], PHP_INT_MAX, 2 );
+		// Before JetEngine's relation translation at p-10, see Relation_Filters.
+		add_filter( 'jet-smart-filters/query/final-query', [ $this, 'extract_relation_filters' ], -20 );
 		add_filter( 'jet-smart-filters/query/final-query', [ $this, 'secure_filter_args' ], PHP_INT_MAX );
 
 		add_filter( 'jet-smart-filters/blocks/allowed-providers', [ $this, 'add_provider_to_dropdown' ] );
@@ -342,6 +344,15 @@ class JSF_Bridge {
 		return $request;
 	}
 
+	/** Keep relation clauses away from JetEngine's client-side `post__in` translation. */
+	public function extract_relation_filters( $args ) {
+		$current = jet_smart_filters()->query->get_current_provider();
+		if ( ! is_array( $args ) || ! is_array( $current ) || ( $current['provider'] ?? '' ) !== 'etch-loop' ) {
+			return $args;
+		}
+		return Relation_Filters::extract( $args );
+	}
+
 	/** Applied after parsing, including sort JSON and plain-query payloads. */
 	public function secure_filter_args( $args ) {
 		$manager = jet_smart_filters()->query;
@@ -359,6 +370,7 @@ class JSF_Bridge {
 		return array_intersect_key( $args, array_flip( [
 			'meta_query', 'tax_query', 'date_query', 's', 'orderby', 'order',
 			'meta_key', 'meta_type', 'paged', 'geo_query', 'alphabet',
+			Relation_Filters::ARG,
 		] ) );
 	}
 
@@ -385,6 +397,9 @@ class JSF_Bridge {
 				}
 				$base[ $key ] = ! empty( $base[ $key ] ) && is_array( $base[ $key ] )
 					? [ 'relation' => 'AND', $base[ $key ], $value ] : $value;
+			} elseif ( Relation_Filters::ARG === $key ) {
+				// Resolved server-side and intersected with the baseline ID scope.
+				$base = Relation_Filters::apply( $base, $value );
 			} else {
 				$base[ $key ] = $value;
 			}
@@ -931,6 +946,15 @@ class JSF_Bridge {
 					$keys = strpos( $meta_key, ',' ) !== false
 						? array_map( 'trim', explode( ',', $meta_key ) )
 						: [ $meta_key ];
+
+					// JetEngine relations live in the relation table, not in meta.
+					if ( array_filter( $keys, [ Relation_Filters::class, 'is_relation_key' ] ) ) {
+						$relation_counts = count( $keys ) === 1
+							? Relation_Filters::counts( $keys[0], $matching_ids, $values, $count_args['post_type'] ?? '' )
+							: null;
+						$indexed_data['meta_query'][ $meta_key ] = $relation_counts ?? [];
+						continue;
+					}
 
 					$cmt_keys = $cmt_table
 						? array_values( array_intersect( $keys, $cmt_fields ) )

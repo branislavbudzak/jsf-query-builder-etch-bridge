@@ -29,6 +29,7 @@ class Jet_Smart_Filters_Provider_Base {}
 require $argv[1] ?? dirname(__DIR__, 2) . '/jet-smart-filters/includes/query.php';
 require dirname(__DIR__) . '/includes/class-state-stack.php';
 require dirname(__DIR__) . '/includes/class-debug.php';
+require dirname(__DIR__) . '/includes/class-relation-filters.php';
 require dirname(__DIR__) . '/includes/class-jsf-bridge.php';
 require dirname(__DIR__) . '/includes/class-jsf-provider.php';
 function jet_smart_filters() { return $GLOBALS['jsf']; }

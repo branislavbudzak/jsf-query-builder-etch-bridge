@@ -50,6 +50,7 @@ class Plugin {
 		// At plugins_loaded all plugin main files have been included, so
 		// JSF/JE class definitions are available regardless of load order.
 		if ( $this->is_jsf_active() ) {
+			require_once JQBEB_DIR . 'includes/class-relation-filters.php';
 			require_once JQBEB_DIR . 'includes/class-jsf-bridge.php';
 			$this->jsf_bridge = new JSF_Bridge();
 
