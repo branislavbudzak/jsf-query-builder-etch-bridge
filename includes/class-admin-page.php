@@ -198,6 +198,7 @@ jsf-etch-loop jsf-etch-q-cars</code></pre>
 						<tr><td>tax_query <?php esc_html_e( '(taxonomy filters)', 'jsf-query-builder-etch-bridge' ); ?></td><td><span class="jqbeb-status ok">✓</span></td></tr>
 						<tr><td>meta_query <?php esc_html_e( '(postmeta filters)', 'jsf-query-builder-etch-bridge' ); ?></td><td><span class="jqbeb-status ok">✓</span></td></tr>
 						<tr><td>meta_query <?php esc_html_e( 'on JE Custom Meta Tables (CMT) fields', 'jsf-query-builder-etch-bridge' ); ?></td><td><span class="jqbeb-status ok">✓</span></td></tr>
+						<tr><td>meta_query <?php esc_html_e( 'on JetEngine relations (related_children* / related_parents*)', 'jsf-query-builder-etch-bridge' ); ?></td><td><span class="jqbeb-status ok">✓</span></td></tr>
 						<tr><td><?php esc_html_e( 'Range filters (sliders)', 'jsf-query-builder-etch-bridge' ); ?></td><td><span class="jqbeb-status muted">—</span> <small><?php esc_html_e( 'sliders don\'t use per-option counts', 'jsf-query-builder-etch-bridge' ); ?></small></td></tr>
 					</table>
 					<p class="description"><?php esc_html_e( 'CMT-stored fields are auto-detected and queried directly against the custom table — see Combined & CMT tab for details.', 'jsf-query-builder-etch-bridge' ); ?></p>

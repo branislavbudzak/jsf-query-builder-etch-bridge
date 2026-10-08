@@ -48,6 +48,11 @@ JSF AJAX does not loop back over HTTP by default: the wrapper block tree is cach
 ### Hook priority ladder (when both bridges are active on the same wrapper)
 
 ```
+final-query       p-20   JSF bridge moves JetEngine relation clauses
+                          (related_children* / related_parents*) out of
+                          meta_query into a server-resolved plan, before
+                          JetEngine's own p-10 post__in translation
+final-query       p∞     JSF bridge client whitelist (secure_filter_args)
 pre_render_block  p4     JE bridge captures je-etch-loop wrapper
 pre_render_block  p5     JSF bridge captures jsf-etch-loop wrapper;
                           JE loop-context bridge stashes + sets
@@ -86,6 +91,7 @@ wp_footer         p5     JSF bridge outputs window.JQBEBData (BEFORE wp_print_fo
 - CMT table names come from `Manager::get_db_instance(...)->table()`, never `Manager::get_table_name()`.
 - Native Etch CMT late sorting (v1.3.3): the p70 redirect accepts `_jqbeb_je_query_id` or the exact JSF provider prefix `etch-loop/`. Preserve an existing same-table `custom_table_query.query`, intersect new restrictions with `AND`, keep the previous order mapping unless a new CMT sort replaces it. Never broaden the guard to every JSF provider. Regression: `php tests/cmt-late-scope.php`.
 - CMT geo queries (v1.3.6): the JetEngine Location & Distance filter sends only `latitude` / `longitude` / `distance` / `units`. On a CMT post type JetEngine then warns on the missing `raw_field` (`map-field-storage.php:489`, ~50 per filtered page) and drops the geo query unless `lat_field` / `lng_field` are set too, falling back to a `wp_postmeta` JOIN that matches nothing. `complete_geo_query_late()` (p75) fills all three from the post type's single map field. Unlike the p70 CMT redirect this one is deliberately NOT scoped to `etch-loop/`, because the indexer count queries need it as well. Regression: `php tests/cmt-geo-query.php`.
+- JetEngine relation filters (v1.3.7): JetEngine turns `related_children*<id>` / `related_parents*<id>` into `post__in`, which the client whitelist must drop. `Relation_Filters::extract()` (final-query p-20, `etch-loop` only) takes the clauses out first and keeps a plan under `jqbeb_relation_filters`; `merge_filter_args()` resolves it through the JE relation API and intersects it with the trusted baseline (baseline order kept, baseline `post__not_in` subtracted because WP_Query ignores it once `post__in` is set), so results, indexer counts and dynamic range share one path. Invalid input (0, empty, malformed, unknown relation, wrong post type, mixed OR group) resolves to `post__in = [0]`, never to "no restriction": JE's `get_children( 0 )` drops the parent condition. Counts read the relation table, not `wp_postmeta`. Regression: `php tests/relation-filters.php`.
 - Any site flag that scopes the loop in its own `pre_get_posts` must be added via `jqbeb_jsf_default_query_keys`, or AJAX indexer counts run without it (nearcharger-core-logic adds `nc_light`).
 
 ## Wrapper class conventions
@@ -111,6 +117,7 @@ includes/
   class-state-stack.php                 push/pop helper used by both bridges
   class-jsf-bridge.php                  JSF integration: wrapper capture, block cache, context snapshot, indexer, range filters
   class-jsf-provider.php                Jet_Smart_Filters_Provider_Base subclass, AJAX fast path + loopback fallback
+  class-relation-filters.php            JetEngine relation filters for etch-loop: extract, resolve, intersect, relation-table counts
   class-je-query-builder-bridge.php     JE type dispatch (Posts / Users / Terms / Merged / SQL / Data Stores) + CMT redirect
   class-je-loop-context-bridge.php      per-block current_object sync to the topmost Etch loop entry
   class-shortcode.php                   [jsf_etch_count] shortcode
@@ -144,12 +151,13 @@ docs/                                   agent deep dives (not shipped in the ZIP
 - **SQL queries must return a recognisable ID column** (`ID` / `id` / `post_id` / `user_id` / `term_id`); other rows are silently skipped.
 - **Only `loopId`-mode Etch loops are bridged.** `target` / expression mode bypasses `WP_Query`.
 - **Indexer counts skip range filters**; only `tax_query` and `meta_query`. CMT is supported (v0.7.0+), CCT is not.
+- **Indexer counts are not self-excluding.** An option's count is computed over the fully filtered set, so in an OR group picking one value shows 0 for the others. Holds for relation filters too; hide counts on such filters until an opt-in self-exclusion exists.
 - **CMT redirect is Posts-only** (JE core registers Custom_Tables handlers only for `object_type='post'`).
 - **Loop-context bridge** ignores non-default `object_context` on the Data Store Button and does not cover the shortcode form.
 
 ## Security stance
 
-- **Browser-supplied JSF `defaults` are never trusted (1.3.5+).** For the `etch-loop` provider `discard_client_defaults()` empties them; the baseline is what the server captured while rendering the loop (`remember_defaults()` at `pre_get_posts` p50, or the HMAC-signed payload from the loopback), and only whitelisted filter args (`allowed_filter_args()`: meta/tax/date query, search, sort, paged, geo, alphabet) come from the request. Auxiliary queries (indexer counts, dynamic range) without a rendered baseline fail closed to `post__in => [0]`. Anything that can widen post status, post type or the ID scope must come from the server. Regression: `php tests/ajax-query-security.php`.
+- **Browser-supplied JSF `defaults` are never trusted (1.3.5+).** For the `etch-loop` provider `discard_client_defaults()` empties them; the baseline is what the server captured while rendering the loop (`remember_defaults()` at `pre_get_posts` p50, or the HMAC-signed payload from the loopback), and only whitelisted filter args (`allowed_filter_args()`: meta/tax/date query, search, sort, paged, geo, alphabet, plus the relation plan that the bridge itself builds at final-query p-20 and that can only narrow) come from the request. Auxiliary queries (indexer counts, dynamic range) without a rendered baseline fail closed to `post__in => [0]`. Anything that can widen post status, post type or the ID scope must come from the server. Regression: `php tests/ajax-query-security.php`.
 - Loopback AJAX forwards all cookies via `wp_remote_get()` so authenticated content resolves. SSL verification is off by default (local-dev compat) but filterable.
 - `<!--JQBEB-PROPS:...-->` markers are stripped from the AJAX response before send; they only carry parent → loopback props.
 
