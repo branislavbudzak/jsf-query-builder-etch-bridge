@@ -23,6 +23,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 	 */
 	private array $applied = [];
 
+	/** Page of the JSF AJAX request being rendered in-process (POST `paged`), null otherwise. */
+	private static ?int $ajax_page = null;
+
 	public function get_id() {
 		return 'etch-loop';
 	}
@@ -146,7 +149,16 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// out of the base URL) and build_query() is called with $urlencode
 		// = false, so an unencoded `&` or `#` inside a filter value would
 		// truncate or split the loopback query string.
-		$forwarded = urlencode_deep( wp_unslash( $_REQUEST ) );
+		//
+		// Only the POST body: JSF always POSTs its AJAX payload (selection in
+		// `query`, page in `paged`, `provider`, `props`). On JSF 3.8.6 the
+		// request goes to the page URL, so $_REQUEST / $_GET also carry the
+		// query string the page was OPENED with (`tax=povod:23`, `pagenum=2`),
+		// and JSF even turns `pagenum` into `$_REQUEST['jet_paged']`.
+		// Replaying those made "Clear all" keep the old filter and a filter
+		// change keep the old page. The page's own non-JSF args are added
+		// below from the referrer.
+		$forwarded = urlencode_deep( wp_unslash( $_POST ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
 		unset( $forwarded['action'], $forwarded['defaults'] );
 		// JSF 3.8.6 AJAX transport, sent to the page URL. `jsf_ajax=1` on the
 		// loopback makes WordPress answer with an empty 302.
@@ -191,11 +203,12 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			}
 		}
 
-		// The page's own main-query vars (`?s=…&post_type=product`) travel in
-		// the referrer, not in an admin-ajax request. Such a page never uses
-		// the shared fast-path snapshot, see JSF_Bridge::main_query_url_args().
+		// The page's own args (`?s=…&post_type=product`, site params) come
+		// from the referrer without JSF's params. A page with main-query vars
+		// never uses the shared fast-path snapshot, see
+		// JSF_Bridge::main_query_url_args().
 		$url_args   = JSF_Bridge::main_query_url_args_from_url( $referrer );
-		$forwarded += urlencode_deep( $url_args );
+		$forwarded += urlencode_deep( JSF_Bridge::page_url_args( $referrer ) );
 		// This request's own GET / POST too (JSF 3.8.6 posts to the page URL).
 		$fast_path  = JSF_Bridge::fast_path_allowed(
 			$url_args + JSF_Bridge::main_query_url_args( wp_unslash( array_merge( $_GET, $_POST ) ) ), // phpcs:ignore WordPress.Security.NonceVerification
@@ -297,10 +310,12 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			$this->apply_filters_in_request();
 
 			JSF_Bridge::$in_ajax_render = true;
+			self::$ajax_page            = $page_value;
 			try {
 				$rendered = render_block( $direct_cached['block'] );
 			} finally {
 				JSF_Bridge::$in_ajax_render = false;
+				self::$ajax_page            = null;
 
 				// Tear down in reverse order. wp_reset_postdata() is a
 				// no-op if no post is currently set up, so it's safe
@@ -431,7 +446,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 	 * switch, so only load-more requests get the extra wrapper.
 	 */
 	private function wrap_for_load_more( string $inner ): string {
-		$props = $_REQUEST['props'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$props = $_POST['props'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing
 		if ( ! is_array( $props ) || empty( $props['pages'] ) ) {
 			return $inner;
 		}
@@ -590,10 +605,16 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		}
 
 		$jet_paged = 0;
-		foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $key ) {
-			if ( ! empty( $_REQUEST[ $key ] ) ) {
-				$jet_paged = JSF_Bridge::clamp_paged( $_REQUEST[ $key ] );
-				break;
+		if ( null !== self::$ajax_page ) {
+			// In-process AJAX render: the page JSF posted, never the page URL's
+			// own `pagenum` (see ajax_get_content()).
+			$jet_paged = self::$ajax_page;
+		} else {
+			foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $key ) {
+				if ( ! empty( $_REQUEST[ $key ] ) ) {
+					$jet_paged = JSF_Bridge::clamp_paged( $_REQUEST[ $key ] );
+					break;
+				}
 			}
 		}
 		if ( $jet_paged > 1 ) {

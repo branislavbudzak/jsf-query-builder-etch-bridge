@@ -40,6 +40,12 @@ Key since 1.3.8: `jqbeb_ctx2_` + md5( path | query id | u=<user id> ). The new p
 
 JSF 3.8.6 sends its AJAX request to the page URL (`referrer_url`), not to admin-ajax, so `wp_doing_ajax()` is false there. Code that must skip the AJAX render checks `JSF_Bridge::$in_ajax_render`.
 
+## AJAX state comes only from the POST body (v1.3.9)
+
+JSF 3.8.6 posts its AJAX request to the page URL INCLUDING the query string the page was opened with (`/?s=syr&jsf=etch-loop:produkty&tax=povod:23&pagenum=2&jsf_ajax=1`); the current selection, sort and page travel in the POST body (`query`, `paged`, `props`). JSF even converts the URL's `pagenum` into `$_REQUEST['jet_paged']`. Before 1.3.9 the bridge read `$_REQUEST`, so a page opened from a shared or reloaded filtered URL replayed that state: "Clear all" kept the old filter (search via the loopback: 1 product instead of 23) and a filter change kept the old page (archive opened on `pagenum=2` + a supplier with 4 products: 0).
+
+Now `ajax_get_content()` builds the loopback from `$_POST` plus `JSF_Bridge::page_url_args( $referrer )` (the page URL without JSF params, `is_jsf_url_param()`: `jsf`, `jsf_ajax`, `provider`, `tax`, `meta`, `date`, `sort`, `alphabet`, `_s`, `search`, `pagenum`, `plain_query`, `paged`, raw `_tax_query_*`-style keys, `__s_*`, plus JSF's own `render->get_request_query_vars()`). Site params an Etch loop reads (`?kat=`) and main-query vars (`s`, `post_type`) are kept. The in-process render takes the page from `JSF_Provider::$ajax_page` (the posted `paged`), never from `$_REQUEST`; server renders (Etch's own pager `?jsf=etch-loop:produkty&pagenum=N`) still read the URL page. A filter change starts on page 1 because JSF does not post `paged` then. JSF's signed `query_context` and the sorting values allowed by the page's sorting block are untouched: they are validated by JSF on the AJAX request itself, before the bridge renders.
+
 ## Contract for plugins that prepare the main query (v1.3.8)
 
 A plugin that prepares a search or other URL-driven main query in `pre_get_posts` (Poctivá poživeň's search sets JetSearch's marker `_poziven_jetsearch` and the accepted `s`) needs nothing bridge-specific for results: the AJAX render of that page IS a normal front-end request (the loopback). What to know:

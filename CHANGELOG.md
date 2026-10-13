@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+- JSF AJAX on a page opened from a filtered URL (shared link, reload after filtering) replayed the state in that URL. JSF 3.8.6 posts to the page URL including its query string (`tax=povod:23`, `pagenum=2`), and the bridge read `$_REQUEST`: "Clear all" kept the old filter on the loopback path (search "syr" opened with Rakúsko stayed at 1 product instead of 23) and a filter change kept the old page on the fast path (archive opened on page 2, supplier with 4 products showed 0). The AJAX render now takes the selection, sort and page only from JSF's POST body, and the loopback gets the page URL without JSF's params (`s`, `post_type` and site params are kept).
+
+### Verification
+- `php tests/provider-fast-path.php` covers reset, a new selection, site params and the posted page on both paths; it fails on 1.3.8.
+- Poctivá poživeň staging as a guest, Etch workarounds removed: search opened with `tax=povod:23` → reset 23, Slovensko 22 (= server render); archive opened on `pagenum=2` + A2 Mlieko → 4 on page 1; clean search "syr" + Rakúsko 1 of 23; category 72 + Rakúsko 4; supplier 158 → 8; Etch's own "Zobraziť ďalších" pager 24 → 48 → 49.
+
 ## 1.3.8 - 2026-10-13
 
 ### Security

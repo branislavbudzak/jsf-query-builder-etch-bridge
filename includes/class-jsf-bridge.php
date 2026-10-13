@@ -182,6 +182,48 @@ class JSF_Bridge {
 		return is_string( $provider ) && '' !== $provider && 'etch-loop' !== $provider;
 	}
 
+	/**
+	 * True for a JSF URL param: provider selector, filters, sort or page in
+	 * JSF's URL formats (`jsf`, `tax`, `meta`, `sort`, `pagenum`…, raw
+	 * `_tax_query_*` style keys) or its AJAX transport (`jsf_ajax`).
+	 */
+	public static function is_jsf_url_param( string $key ): bool {
+		$vars = [
+			'jsf', 'jsf_ajax', 'provider', 'jet_paged', 'paged', 'pagination',
+			'tax', 'meta', 'date', 'sort', 'alphabet', '_s', 'search', '_sm', 'search-by-meta', 'pagenum', 'plain_query',
+		];
+		if ( function_exists( 'jet_smart_filters' ) && is_object( jet_smart_filters()->render ?? null )
+			&& is_callable( [ jet_smart_filters()->render, 'get_request_query_vars' ] ) ) {
+			$vars = array_merge( $vars, (array) jet_smart_filters()->render->get_request_query_vars() );
+		}
+		return in_array( $key, $vars, true )
+			|| (bool) preg_match( '/^(_(tax_query|meta_query|date_query|sort|alphabet|plain_query|search)|__s_)/', $key );
+	}
+
+	/**
+	 * Query string args of the page URL without JSF's own params.
+	 *
+	 * JSF 3.8.6 posts its AJAX request to the page URL INCLUDING the query
+	 * string the page was opened with (`?s=syr&jsf=etch-loop:produkty&
+	 * tax=povod:23&pagenum=2`), while the current selection, sort and page
+	 * travel in the POST body. Only the non-JSF part (`s`, `post_type`,
+	 * site params an Etch loop reads) describes the page; the JSF part is
+	 * the state the page was opened in and must not be replayed.
+	 */
+	public static function page_url_args( string $url ): array {
+		$args  = [];
+		$query = wp_parse_url( $url, PHP_URL_QUERY );
+		if ( is_string( $query ) && '' !== $query ) {
+			wp_parse_str( $query, $args );
+		}
+		foreach ( array_keys( $args ) as $key ) {
+			if ( self::is_jsf_url_param( (string) $key ) ) {
+				unset( $args[ $key ] );
+			}
+		}
+		return $args;
+	}
+
 	/** main_query_url_args() of a URL's query string. */
 	public static function main_query_url_args_from_url( string $url ): array {
 		$args  = [];
