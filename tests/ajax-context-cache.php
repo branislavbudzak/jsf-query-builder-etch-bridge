@@ -53,6 +53,14 @@ function check($condition, $label) {
 $a = JSF_Bridge::main_query_url_args_from_url('https://shop.test/?s=syr&post_type[]=product&jsf=etch-loop:produkty&tax=povod:23&utm_source=x&paged=3');
 check($a === ['s' => 'syr', 'post_type' => ['product']], 'public main-query vars kept raw (arrays too), JSF params / utm / paged ignored');
 check(JSF_Bridge::main_query_url_args_from_url('https://shop.test/kategoria/x/?jsf=etch-loop:produkty&tax=povod:23&pagenum=2') === [], 'JSF filter URL of an archive keeps the fast path');
+check(JSF_Bridge::main_query_url_args_from_url('https://shop.test/shop/?jsf=woocommerce-archive&_s=med') === ['jsf' => 'woocommerce-archive'], 'jsf selecting another provider counts as a main-query var');
+// Render side: a page rendered with another provider's search writes no snapshot.
+$GLOBALS['transients'] = [];
+$_GET = ['jsf' => 'woocommerce-archive', '_s' => 'med']; $_POST = [];
+$GLOBALS['wp_query'] = new WP_Query(['s' => 'med']);
+(new JSF_Bridge())->on_render_block('<ul></ul>', ['blockName' => 'etch/element', 'attrs' => ['attributes' => ['class' => 'jsf-etch-loop jsf-etch-q-produkty']], 'innerBlocks' => []]);
+check($GLOBALS['transients'] === [], 'foreign provider page does not poison the shared snapshot');
+$GLOBALS['transients'] = [];
 check(!str_starts_with(JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty'), 'jqbeb_block_'), 'pre-1.3.8 entries (jqbeb_block_*) are never read');
 $GLOBALS['user_id'] = 7;
 $k7 = JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty');

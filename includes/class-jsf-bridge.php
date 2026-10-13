@@ -114,8 +114,9 @@ class JSF_Bridge {
 	 * whose main query depends on them is never served from the shared
 	 * fast-path snapshot, which is keyed by path only: its AJAX render goes
 	 * through the loopback, a real request for the visitor's own URL, so
-	 * WordPress parses and validates the vars itself. JSF's own URL params
-	 * (`jsf`, `tax`, `meta`…), unknown args and `paged` / `page` do not count.
+	 * WordPress parses and validates the vars itself. JSF's filter params
+	 * (`tax`, `meta`…), a `jsf` / `provider` selecting the Etch loop, unknown
+	 * args and `paged` / `page` do not count.
 	 *
 	 * @param array $args Unslashed request args.
 	 * @return array Raw values, as sent.
@@ -127,11 +128,22 @@ class JSF_Bridge {
 		if ( ! did_action( 'parse_request' ) ) {
 			$public = (array) apply_filters( 'query_vars', $public );
 		}
-		// `jsf` is JSF's own provider selector (registered as a public var for
-		// its permalink URLs); it never changes the main query.
-		$public = array_diff( array_filter( $public, 'is_string' ), [ 'paged', 'page', 'jsf' ] );
+		$public = array_diff( array_filter( $public, 'is_string' ), [ 'paged', 'page' ] );
+		$found  = array_intersect_key( $args, array_flip( $public ) );
 
-		return array_intersect_key( $args, array_flip( $public ) );
+		// `jsf` / `provider` select the JSF provider (`jsf` is registered as a
+		// public var for JSF's permalink URLs). Selecting the Etch loop never
+		// changes the main query; any other provider (woocommerce-archive
+		// with `_s`) may, so it counts like a main-query var.
+		$etch = static fn( $value ) => is_string( $value ) && preg_match( '#^etch-loop([:/]|$)#', $value );
+		if ( isset( $args['provider'] ) && ! $etch( $args['provider'] ) ) {
+			$found['provider'] = $args['provider'];
+		}
+		if ( isset( $found['jsf'] ) && $etch( $found['jsf'] ) ) {
+			unset( $found['jsf'] );
+		}
+
+		return $found;
 	}
 
 	/** main_query_url_args() of a URL's query string. */
@@ -611,12 +623,14 @@ class JSF_Bridge {
 			}
 		}
 
-		// WP takes the queried taxonomies from the whole tax query.
+		// WP resolves an empty post type only when its own parse_query() set
+		// is_tax (already done for the loop query at this point); category /
+		// tag archives keep the default, nested groups follow WP's flags.
 		$full      = new \WP_Query();
 		$full_vars = $full->fill_query_vars( (array) $query->query_vars );
 		$full->parse_tax_query( $full_vars );
 		$taxonomies = array_keys( $full->tax_query->queried_terms );
-		if ( empty( $args['post_type'] ) && array_diff( $taxonomies, [ 'category', 'post_tag' ] ) ) {
+		if ( empty( $args['post_type'] ) && ! empty( $query->is_tax ) ) {
 			$types = [];
 			foreach ( get_post_types( [ 'exclude_from_search' => false ] ) as $type ) {
 				$object_taxonomies = 'attachment' === $type ? get_taxonomies_for_attachments() : get_object_taxonomies( $type );

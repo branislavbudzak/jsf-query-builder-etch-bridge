@@ -49,7 +49,12 @@ class WP_Query {
     public $tax_query = null;
     public array $posts = [];
     public static array $last_args = [];
-    public function __construct($vars = []) { $this->query_vars = $vars; self::$last_args = $vars; }
+    public bool $is_tax = false;
+    public function __construct($vars = []) {
+        $this->query_vars = $vars; self::$last_args = $vars;
+        // Like WP_Query::parse_query(): a non-category / tag taxonomy var makes it is_tax.
+        foreach (get_taxonomies() as $name => $t) { if ('category' !== $name && !empty($vars[$t->query_var])) { $this->is_tax = true; } }
+    }
     public function get($k) { return $this->query_vars[$k] ?? ''; }
     public function set($k, $v) { $this->query_vars[$k] = $v; }
     public function is_main_query() { return false; }

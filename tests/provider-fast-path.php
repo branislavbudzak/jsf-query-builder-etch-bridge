@@ -66,6 +66,8 @@ $ctx = JQBEB\JSF_Bridge::block_cache_key('/', 'produkty');
 
 check(request('https://shop.test/kategoria/x/?jsf=etch-loop:produkty&tax=povod:23') !== [], 'plain archive reads the snapshot');
 check(request('https://shop.test/?s=syr&post_type=product') === [], 'search referrer never reads the shared snapshot');
+check(request('https://shop.test/kategoria/x/?jsf=woocommerce-archive&_s=med') === [], 'another JSF provider selected in the URL (may change the main query) skips the snapshot');
+check(request('https://shop.test/kategoria/x/', [], ['provider' => 'woocommerce-archive/default']) === [], 'foreign provider in the AJAX request skips the snapshot');
 check(request('https://shop.test/', [], ['s' => 'syr', 'query' => ['_meta_query_x' => '1']]) === [], 'POST s in the AJAX request itself never reads it either');
 check(request('https://shop.test/', ['s' => 'syr', 'jsf_ajax' => '1']) === [], 'JSF 3.8.6 page-URL request with s never reads it');
 

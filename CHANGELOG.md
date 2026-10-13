@@ -25,8 +25,8 @@ All notable changes to this project are documented here. The format loosely foll
 
 ### Verification
 - Added `php tests/main-query-archive.php`, `php tests/ajax-context-cache.php`, `php tests/provider-fast-path.php` and `php tests/tax-scope-real-parser.php` (real WP_Query / WP_Tax_Query), failing on 1.3.7.
-- Staging also showed that JSF registers `jsf` as a public query var; it is ignored by the check, otherwise every filtered archive URL would have lost the fast path.
-- Independent review in two rounds (GPT-6 Astra high); round 1 rejected rebuilding the main query from the referrer, round 2 found legacy entries, per-user scope, POST reads and the OR / filter case, all fixed here.
+- Staging also showed that JSF registers `jsf` as a public query var. A `jsf` / `provider` selecting `etch-loop` is ignored by the check (otherwise every filtered archive URL would lose the fast path); another provider still counts, because it can put a search into the main query.
+- Independent review in three rounds (GPT-6 Astra high); round 1 rejected rebuilding the main query from the referrer, round 2 found legacy entries, per-user scope, POST reads and the OR / filter case, round 3 a foreign JSF provider in the URL and WP's `is_tax` guard for the post type, all fixed here.
 - Poctivá poživeň staging, template 177 `/kategoria/mliecne-a-syry/` with the loop workarounds removed: `[jsf_etch_count]` 49, `etch-loop/produkty` in props, option counts Rakúsko 4 and Syrex Zázrivá (158) 8; AJAX supplier 158 → 8 cards and count 8, Rakúsko → 4; load more 24 → 48 → 49 unique cards, then a filter replaces them with 4.
 
 ## 1.3.7 - 2026-10-08

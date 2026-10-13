@@ -20,6 +20,18 @@ function get_post_types($a = []) { return ['post' => 'post', 'product' => 'produ
 function get_object_taxonomies($type) { return 'product' === $type ? ['product_cat', 'povod'] : ['category', 'post_tag']; }
 function get_taxonomies_for_attachments() { return []; }
 function taxonomy_exists($t) { return true; }
+function is_admin() { return false; }
+function wp_using_themes() { return true; }
+function get_option($k, $d = false) { return $d; }
+function is_scalar_or_null($v) { return true; }
+function get_query_var($v) { return ''; }
+function wp_parse_args($a, $d = []) { return array_merge($d, (array) $a); }
+function get_taxonomy($t) { return (object) ['name' => $t, 'query_var' => $t]; }
+function get_post_type_object($t) { return null; }
+function has_action(...$a) { return false; }
+function do_action_ref_array(...$a) {}
+function sanitize_key($k) { return preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $k)); }
+function wp_is_serving_rest_request(...$a) { return false; }
 require $wpinc . '/class-wp-tax-query.php';
 require $wpinc . '/class-wp-query.php';
 require dirname(__DIR__) . '/includes/class-state-stack.php';
@@ -39,7 +51,8 @@ function parsed(array $args): array {
     $q->parse_tax_query($v);
     return $q->tax_query->queries;
 }
-function loop_query(array $vars): WP_Query { $q = new WP_Query(); $q->query_vars = $q->fill_query_vars($vars); return $q; }
+/** The loop query as it stands at pre_get_posts: WP's real parse_query() has set its flags. */
+function loop_query(array $vars): WP_Query { $q = new WP_Query(); $q->parse_query($vars); return $q; }
 
 $x = ['taxonomy' => 'povod', 'field' => 'slug', 'terms' => ['sk']];
 $b = ['taxonomy' => 'povod', 'field' => 'slug', 'terms' => ['at']];
@@ -63,6 +76,14 @@ $woo  = ['post_type' => '', 'product_cat' => 'mliecne-a-syry', 'taxonomy' => 'pr
 $wdef = JQBEB\JSF_Bridge::add_taxonomy_scope(loop_query($woo), ['post_type' => '', 'tax_query' => $vis]);
 check(parsed(JQBEB\JSF_Bridge::merge_filter_args($wdef, $filters)) == parsed(JQBEB\JSF_Bridge::merge_filter_args($woo, $filters)), 'Woo archive with a filter: indexer == loop');
 check(JQBEB\JSF_Bridge::add_taxonomy_scope(loop_query(['post_type' => 'product']), ['post_type' => 'product']) === ['post_type' => 'product'], 'no taxonomy vars: defaults untouched');
+
+// Review round 3: category archive + explicit OR group with a nested custom taxonomy.
+$nested = ['post_type' => '', 'category_name' => 'news', 'tax_query' => ['relation' => 'OR', ['relation' => 'AND', ['taxonomy' => 'povod', 'field' => 'slug', 'terms' => ['sk']]]]];
+$nq = loop_query($nested);
+$nd = JQBEB\JSF_Bridge::add_taxonomy_scope($nq, ['post_type' => '', 'tax_query' => $nested['tax_query']]);
+check(!$nq->is_tax && empty($nd['post_type']), 'WP is_tax false (category archive): post type left to WP default, like the loop');
+$tq = loop_query(['post_type' => '', 'product_cat' => 'syry']);
+check($tq->is_tax && JQBEB\JSF_Bridge::add_taxonomy_scope($tq, ['post_type' => ''])['post_type'] === 'product', 'WP is_tax true: post type resolved');
 
 exit($failures ? 1 : 0);
 }
