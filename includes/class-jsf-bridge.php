@@ -135,7 +135,7 @@ class JSF_Bridge {
 		// public var for JSF's permalink URLs). Selecting the Etch loop never
 		// changes the main query; any other provider (woocommerce-archive
 		// with `_s`) may, so it counts like a main-query var.
-		$etch = static fn( $value ) => is_string( $value ) && preg_match( '#^etch-loop([:/]|$)#', $value );
+		$etch = static fn( $value ) => is_string( $value ) && 'etch-loop' === self::jsf_provider_id( $value );
 		if ( isset( $args['provider'] ) && ! $etch( $args['provider'] ) ) {
 			$found['provider'] = $args['provider'];
 		}
@@ -144,6 +144,32 @@ class JSF_Bridge {
 		}
 
 		return $found;
+	}
+
+	/** Provider part of a JSF provider selector, decoded like JSF does (configurable delimiter). */
+	private static function jsf_provider_id( string $value ): string {
+		if ( function_exists( 'jet_smart_filters' ) && is_object( jet_smart_filters()->query ?? null )
+			&& is_callable( [ jet_smart_filters()->query, 'decode_provider_data' ] ) ) {
+			return (string) ( jet_smart_filters()->query->decode_provider_data( $value )['provider'] ?? '' );
+		}
+		return preg_match( '#^([^:/]+)#', $value, $m ) ? $m[1] : '';
+	}
+
+	/**
+	 * True when JSF applies another provider's filters in this request.
+	 *
+	 * Those (woocommerce-archive, epro-archive…) filter the MAIN query, e.g.
+	 * a `_s` search, whatever form the URL takes: `?jsf=…`, `provider=…` or
+	 * JSF's permalink `/shop/jsf/woocommerce-archive/`. Asking JSF for the
+	 * provider it actually selected covers all of them.
+	 */
+	public static function other_jsf_provider_active(): bool {
+		if ( ! function_exists( 'jet_smart_filters' ) || ! is_object( jet_smart_filters()->query ?? null )
+			|| ! is_callable( [ jet_smart_filters()->query, 'get_current_provider' ] ) ) {
+			return false;
+		}
+		$provider = jet_smart_filters()->query->get_current_provider( 'provider' );
+		return is_string( $provider ) && '' !== $provider && 'etch-loop' !== $provider;
 	}
 
 	/** main_query_url_args() of a URL's query string. */
@@ -682,11 +708,15 @@ class JSF_Bridge {
 		// in-flight transients with the old shape still resolve.
 		//
 		// Not for a page whose main query depends on query string / POST
-		// vars (`/?s=…&post_type=product`): the entry is shared by everyone
-		// on the path, so it would hand one visitor's search to the next.
-		// The provider sends those pages through the loopback instead.
+		// vars (`/?s=…&post_type=product`) or is filtered by another JSF
+		// provider (also in JSF's permalink form): the entry is shared by
+		// everyone on the path, so it would hand one visitor's search to the
+		// next. Without an entry the provider uses the loopback. The key
+		// includes the path, so a permalink like `/shop/jsf/<provider>/`
+		// never finds an entry written for a clean page.
 		$request_args = wp_unslash( array_merge( $_GET, $_POST ) ); // phpcs:ignore WordPress.Security.NonceVerification
-		if ( ! self::is_loopback() && ! self::$in_ajax_render && self::fast_path_allowed( self::main_query_url_args( $request_args ) ) ) {
+		if ( ! self::is_loopback() && ! self::$in_ajax_render && ! self::other_jsf_provider_active()
+			&& self::fast_path_allowed( self::main_query_url_args( $request_args ) ) ) {
 			set_transient(
 				self::block_cache_key( self::current_path(), $query_id ),
 				[
