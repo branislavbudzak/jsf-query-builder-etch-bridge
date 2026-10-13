@@ -216,8 +216,12 @@ class JSF_Bridge {
 		if ( is_string( $query ) && '' !== $query ) {
 			wp_parse_str( $query, $args );
 		}
+		// JSF's AJAX transport too: a referrer carrying `action=jet_smart_filters`
+		// or a `query[…]` would switch the loopback into JSF's AJAX parser with
+		// that stale selection.
+		$transport = [ 'action', 'query', 'defaults', 'settings', 'props', 'query_context', 'indexing_filters', 'dynamic_range', 'referrer', 'extra_props', 'page' ];
 		foreach ( array_keys( $args ) as $key ) {
-			if ( self::is_jsf_url_param( (string) $key ) ) {
+			if ( in_array( (string) $key, $transport, true ) || self::is_jsf_url_param( (string) $key ) ) {
 				unset( $args[ $key ] );
 			}
 		}

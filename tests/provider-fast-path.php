@@ -43,7 +43,8 @@ $GLOBALS['wp'] = new WP();
 class WP_Query { public array $query_vars = []; public function get($k) { return $this->query_vars[$k] ?? ''; } public function set($k, $v) { $this->query_vars[$k] = $v; } }
 class Jet_Smart_Filters_Provider_Base {}
 function jet_smart_filters() {
-    return (object)['query' => new class { public $_query = []; public function get_current_provider() { return ['provider' => 'etch-loop', 'query_id' => 'produkty']; } }];
+    static $jsf = null;
+    return $jsf ??= (object)['query' => new class { public $_query = []; public function get_current_provider() { return ['provider' => 'etch-loop', 'query_id' => 'produkty']; } }];
 }
 require dirname(__DIR__) . '/includes/class-state-stack.php';
 require dirname(__DIR__) . '/includes/class-debug.php';
@@ -104,13 +105,33 @@ request('https://shop.test/dodavatelia/?kat=5&jsf=etch-loop:produkty&pagenum=2&u
 $lb = loopback_args();
 check(($lb['kat'] ?? '') === '5' && ($lb['jet_paged'] ?? '') === '3' && ($lb['pagenum'] ?? '') !== '2', 'site params kept, page only from JSF\'s posted paged');
 
+request('https://shop.test/?s=syr&action=jet_smart_filters&query[__s_query%7Csearch]=OLD&settings[x]=1', ['s' => 'syr', 'jsf_ajax' => '1'], ['provider' => 'etch-loop/produkty', 'query' => ['__s_query|search' => 'NEW']]);
+$lb = loopback_args();
+check(!isset($lb['action'], $lb['query'], $lb['settings']) && ($lb['__s_query|search'] ?? '') === 'NEW', 'JSF transport keys in the referrer are not replayed, the posted selection wins (review)');
+request('https://shop.test/kategoria/x/page/2/?jsf=etch-loop:produkty', ['jsf_ajax' => '1'], ['provider' => 'etch-loop/produkty', 'query' => ['_tax_query_povod' => '23']]);
+check(str_starts_with($GLOBALS['loopback'][0], 'https://shop.test/kategoria/x/?'), 'loopback drops /page/N/ from the page path (review)');
+request('https://shop.test/kategoria/x/page/3/', [], ['provider' => 'etch-loop/produkty', 'paged' => '3']);
+check(str_starts_with($GLOBALS['loopback'][0], 'https://shop.test/kategoria/x/?') && (loopback_args()['jet_paged'] ?? '') === '3', 'posted page travels as jet_paged instead');
+foreach (['https://shop.test:8443/kategoria/x/' => 'another port', 'https://user:pw@shop.test/kategoria/x/' => 'credentials', 'http://shop.test/kategoria/x/' => 'scheme downgrade', '//shop.test/kategoria/x/' => 'no scheme'] as $ref => $why) {
+    check(request($ref, [], ['provider' => 'etch-loop/produkty']) === [] && null === $GLOBALS['loopback'], "referrer rejected: $why (review)");
+}
+check(request('https://shop.test:443/kategoria/x/') !== [], 'explicit default port is the same origin');
+
 // Fast path: the in-process render takes the posted page, not the page URL's pagenum / JSF's jet_paged.
 $page = new ReflectionProperty(JQBEB\JSF_Provider::class, 'ajax_page');
 $_REQUEST = ['pagenum' => '2', 'jet_paged' => '2'];
 $page->setValue(null, 0);
 $loop = new WP_Query(); $loop->query_vars = ['post_type' => 'product', 'jet_smart_filters' => 'etch-loop/produkty'];
 (new JQBEB\JSF_Provider())->apply_jsf_to_tagged_query($loop);
-check(empty($loop->query_vars['paged']), 'fast path: filter change without posted page starts on page 1');
+check(($loop->query_vars['paged'] ?? 0) === 1, 'fast path: filter change without posted page starts on page 1');
+$loop = new WP_Query(); $loop->query_vars = ['post_type' => 'product', 'paged' => 2, 'jet_smart_filters' => 'etch-loop/produkty'];
+(new JQBEB\JSF_Provider())->apply_jsf_to_tagged_query($loop);
+check(($loop->query_vars['paged'] ?? 0) === 1, 'fast path: page inherited from /page/2/ or the snapshot is reset to 1 (review)');
+jet_smart_filters()->query->_query = ['paged' => 2];
+$loop = new WP_Query(); $loop->query_vars = ['post_type' => 'product', 'jet_smart_filters' => 'etch-loop/produkty'];
+(new JQBEB\JSF_Provider())->apply_jsf_to_tagged_query($loop);
+check(($loop->query_vars['paged'] ?? 0) === 1, 'fast path: JSF parsing ?paged=2 from the page URL does not win over the posted page (review)');
+jet_smart_filters()->query->_query = [];
 $page->setValue(null, 3);
 $loop = new WP_Query(); $loop->query_vars = ['post_type' => 'product', 'jet_smart_filters' => 'etch-loop/produkty'];
 (new JQBEB\JSF_Provider())->apply_jsf_to_tagged_query($loop);

@@ -215,7 +215,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			(string) ( wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/' )
 		);
 
-		$base_url = strtok( $referrer, '?' );
+		// `/page/N/` in the path is the page the page was opened on, like
+		// `pagenum`; the posted page is in $forwarded.
+		$base_url = preg_replace( '#/page/\d+/?$#', '/', (string) strtok( $referrer, '?' ) );
 		$url      = add_query_arg( $forwarded, $base_url );
 
 		// ============================================================
@@ -495,7 +497,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 	 */
 	private static function is_same_origin( string $url ): bool {
 		$ref = wp_parse_url( $url );
-		if ( empty( $ref['host'] ) ) {
+		if ( ! is_array( $ref ) || empty( $ref['host'] ) || empty( $ref['scheme'] )
+			|| ! in_array( strtolower( $ref['scheme'] ), [ 'http', 'https' ], true )
+			|| isset( $ref['user'] ) || isset( $ref['pass'] ) ) {
 			return false;
 		}
 		foreach ( [ home_url(), site_url() ] as $known ) {
@@ -506,11 +510,17 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			if ( strcasecmp( $ref['host'], $cmp['host'] ) !== 0 ) {
 				continue;
 			}
-			// Require scheme match when both sides declare one — blocks
-			// https → http downgrade via referer spoof. If either side has
-			// no scheme, accept on host match alone.
-			if ( ! empty( $ref['scheme'] ) && ! empty( $cmp['scheme'] )
-				&& strcasecmp( $ref['scheme'], $cmp['scheme'] ) !== 0 ) {
+			// Scheme must match when the site URL declares one (blocks an
+			// https → http downgrade via a spoofed referer).
+			$cmp_scheme = strtolower( $cmp['scheme'] ?? $ref['scheme'] );
+			if ( strtolower( $ref['scheme'] ) !== $cmp_scheme ) {
+				continue;
+			}
+			// Same effective port: another service on the same host
+			// (`https://site:8443/`) must not receive the loopback, its
+			// cookies and its signature.
+			$default = 'https' === $cmp_scheme ? 443 : 80;
+			if ( (int) ( $ref['port'] ?? $default ) !== (int) ( $cmp['port'] ?? $default ) ) {
 				continue;
 			}
 			return true;
@@ -640,6 +650,13 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 
 		foreach ( JSF_Bridge::merge_filter_args( $query->query_vars, $jsf_args ) as $key => $value ) {
 			$query->set( $key, $value );
+		}
+
+		// In-process AJAX render: the posted page, or 1, decides last. JSF's
+		// parser can pick `paged` up from the page URL's `?paged=2`, and a
+		// main-query loop inherits `paged` from `/page/2/` or the snapshot.
+		if ( null !== self::$ajax_page ) {
+			$query->set( 'paged', max( 1, self::$ajax_page ) );
 		}
 
 		if ( Debug::pagination_enabled() ) {
