@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased (planned 1.3.8)
+## 1.3.8 - 2026-10-13
 
 ### Security
 - The JSF AJAX fast path no longer shares one visitor's search with another. The cached main-query snapshot is keyed by URL path and query id, and every search runs on `/` (`/?s=…&post_type=product`), so a filter click could rebuild the main query with the `s` of whoever last rendered a search (reproduced on the Poctivá poživeň staging: "syr" turned into "med" results). A page whose main query depends on WordPress public query vars in GET / POST now never writes or reads the shared snapshot; its AJAX render goes through the loopback, a real request for the visitor's own URL. The loopback is signed (`X-JQBEB-Loopback-Signature`, `JSF_Bridge::is_verified_loopback()`) and adds the referrer's public query vars to its URL.

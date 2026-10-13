@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.3.7
+Stable tag: 1.3.8
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,16 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.3.8 =
+* Security: JSF AJAX no longer shows one visitor's search to another. Pages whose main query depends on the request (search `?s=`, other public query vars, another JSF provider, JSF permalink URLs) never use the shared page snapshot; their AJAX render is a real request for the visitor's own URL. Logged-in visitors get their own snapshot, older snapshots are never read again, and the new filter `jqbeb_fast_path_enabled` turns the snapshot off for pages personalized for anonymous visitors.
+* Security: page numbers from the request are capped (`jqbeb_max_paged`, default 1000).
+* Fix: Etch main-query loops on WooCommerce archives are now driven by JSF (counter, props, per-option counts). They inherited the archive's `woocommerce-archive` tag before.
+* Fix: relation filters and indexer counts on term archives (empty post type, term scope from the archive URL).
+* Fix: JSF pagination "Load more" appends the next cards.
+* Fix: the AJAX fallback loopback rendered nothing on JetSmartFilters 3.8.6.
+* Search loops: indexer counts follow the search. New `JSF_Bridge::is_verified_loopback()` for plugins that need to recognise the bridge's own loopback (e.g. rate limits).
+* Known limit: another JSF provider filtering the main query plus JSF filtering of an Etch main-query loop on the same page is not supported.
 
 = 1.3.7 =
 * Fix: JetSmartFilters filters on JetEngine relations (`related_children*<id>` / `related_parents*<id>`) now restrict an Etch loop. Previously the bridge's security whitelist dropped the post IDs JetEngine resolved, so selecting a related item returned the unfiltered listing. The relation is now resolved on the server and intersected with the loop's own scope, and invalid values return an empty result instead of every item.
