@@ -23,6 +23,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 	 */
 	private array $applied = [];
 
+	/** Page of the JSF AJAX request being rendered in-process (POST `paged`), null otherwise. */
+	private static ?int $ajax_page = null;
+
 	public function get_id() {
 		return 'etch-loop';
 	}
@@ -146,7 +149,16 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// out of the base URL) and build_query() is called with $urlencode
 		// = false, so an unencoded `&` or `#` inside a filter value would
 		// truncate or split the loopback query string.
-		$forwarded = urlencode_deep( wp_unslash( $_REQUEST ) );
+		//
+		// Only the POST body: JSF always POSTs its AJAX payload (selection in
+		// `query`, page in `paged`, `provider`, `props`). On JSF 3.8.6 the
+		// request goes to the page URL, so $_REQUEST / $_GET also carry the
+		// query string the page was OPENED with (`tax=povod:23`, `pagenum=2`),
+		// and JSF even turns `pagenum` into `$_REQUEST['jet_paged']`.
+		// Replaying those made "Clear all" keep the old filter and a filter
+		// change keep the old page. The page's own non-JSF args are added
+		// below from the referrer.
+		$forwarded = urlencode_deep( wp_unslash( $_POST ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
 		unset( $forwarded['action'], $forwarded['defaults'] );
 		// JSF 3.8.6 AJAX transport, sent to the page URL. `jsf_ajax=1` on the
 		// loopback makes WordPress answer with an empty 302.
@@ -182,27 +194,32 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				}
 			}
 		}
-		if ( $page_value > 1 ) {
-			if ( empty( $forwarded['pagination'] ) ) {
-				$forwarded['pagination'] = $page_value;
-			}
-			if ( empty( $forwarded['jet_paged'] ) ) {
-				$forwarded['jet_paged'] = $page_value;
-			}
+		if ( $page_value > 1 && empty( $forwarded['pagination'] ) ) {
+			$forwarded['pagination'] = $page_value;
+		}
+		// Always explicit, also page 1: the loopback page may inherit a page
+		// from its path (`/page/2/`, any pagination base) and only an explicit
+		// page overrides that in merge_jsf_into_query().
+		if ( empty( $forwarded['jet_paged'] ) ) {
+			$forwarded['jet_paged'] = max( 1, $page_value );
 		}
 
-		// The page's own main-query vars (`?s=…&post_type=product`) travel in
-		// the referrer, not in an admin-ajax request. Such a page never uses
-		// the shared fast-path snapshot, see JSF_Bridge::main_query_url_args().
+		// The page's own args (`?s=…&post_type=product`, site params) come
+		// from the referrer without JSF's params. A page with main-query vars
+		// never uses the shared fast-path snapshot, see
+		// JSF_Bridge::main_query_url_args().
 		$url_args   = JSF_Bridge::main_query_url_args_from_url( $referrer );
-		$forwarded += urlencode_deep( $url_args );
+		$forwarded += urlencode_deep( JSF_Bridge::page_url_args( $referrer ) );
 		// This request's own GET / POST too (JSF 3.8.6 posts to the page URL).
 		$fast_path  = JSF_Bridge::fast_path_allowed(
 			$url_args + JSF_Bridge::main_query_url_args( wp_unslash( array_merge( $_GET, $_POST ) ) ), // phpcs:ignore WordPress.Security.NonceVerification
 			(string) ( wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/' )
 		);
 
-		$base_url = strtok( $referrer, '?' );
+		// `/page/N/` (the site's pagination base) in the path is the page the
+		// page was opened on, like `pagenum`; the posted page is in $forwarded.
+		$pagination_base = ! empty( $GLOBALS['wp_rewrite']->pagination_base ) ? (string) $GLOBALS['wp_rewrite']->pagination_base : 'page';
+		$base_url        = preg_replace( '#/' . preg_quote( $pagination_base, '#' ) . '/\d+/?$#', '/', (string) strtok( $referrer, '?' ) );
 		$url      = add_query_arg( $forwarded, $base_url );
 
 		// ============================================================
@@ -297,10 +314,12 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			$this->apply_filters_in_request();
 
 			JSF_Bridge::$in_ajax_render = true;
+			self::$ajax_page            = $page_value;
 			try {
 				$rendered = render_block( $direct_cached['block'] );
 			} finally {
 				JSF_Bridge::$in_ajax_render = false;
+				self::$ajax_page            = null;
 
 				// Tear down in reverse order. wp_reset_postdata() is a
 				// no-op if no post is currently set up, so it's safe
@@ -431,7 +450,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 	 * switch, so only load-more requests get the extra wrapper.
 	 */
 	private function wrap_for_load_more( string $inner ): string {
-		$props = $_REQUEST['props'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$props = $_POST['props'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing
 		if ( ! is_array( $props ) || empty( $props['pages'] ) ) {
 			return $inner;
 		}
@@ -480,7 +499,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 	 */
 	private static function is_same_origin( string $url ): bool {
 		$ref = wp_parse_url( $url );
-		if ( empty( $ref['host'] ) ) {
+		if ( ! is_array( $ref ) || empty( $ref['host'] ) || empty( $ref['scheme'] )
+			|| ! in_array( strtolower( $ref['scheme'] ), [ 'http', 'https' ], true )
+			|| isset( $ref['user'] ) || isset( $ref['pass'] ) ) {
 			return false;
 		}
 		foreach ( [ home_url(), site_url() ] as $known ) {
@@ -491,11 +512,17 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			if ( strcasecmp( $ref['host'], $cmp['host'] ) !== 0 ) {
 				continue;
 			}
-			// Require scheme match when both sides declare one — blocks
-			// https → http downgrade via referer spoof. If either side has
-			// no scheme, accept on host match alone.
-			if ( ! empty( $ref['scheme'] ) && ! empty( $cmp['scheme'] )
-				&& strcasecmp( $ref['scheme'], $cmp['scheme'] ) !== 0 ) {
+			// Scheme must match when the site URL declares one (blocks an
+			// https → http downgrade via a spoofed referer).
+			$cmp_scheme = strtolower( $cmp['scheme'] ?? $ref['scheme'] );
+			if ( strtolower( $ref['scheme'] ) !== $cmp_scheme ) {
+				continue;
+			}
+			// Same effective port: another service on the same host
+			// (`https://site:8443/`) must not receive the loopback, its
+			// cookies and its signature.
+			$default = 'https' === $cmp_scheme ? 443 : 80;
+			if ( (int) ( $ref['port'] ?? $default ) !== (int) ( $cmp['port'] ?? $default ) ) {
 				continue;
 			}
 			return true;
@@ -590,13 +617,21 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		}
 
 		$jet_paged = 0;
-		foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $key ) {
-			if ( ! empty( $_REQUEST[ $key ] ) ) {
-				$jet_paged = JSF_Bridge::clamp_paged( $_REQUEST[ $key ] );
-				break;
+		if ( null !== self::$ajax_page ) {
+			// In-process AJAX render: the page JSF posted, never the page URL's
+			// own `pagenum` (see ajax_get_content()).
+			$jet_paged = self::$ajax_page;
+		} else {
+			foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $key ) {
+				if ( ! empty( $_REQUEST[ $key ] ) ) {
+					$jet_paged = JSF_Bridge::clamp_paged( $_REQUEST[ $key ] );
+					break;
+				}
 			}
 		}
-		if ( $jet_paged > 1 ) {
+		// >= 1: an explicit page 1 (the loopback always sends one) must also
+		// override a page inherited from the main query.
+		if ( $jet_paged >= 1 ) {
 			$query->set( 'paged', $jet_paged );
 		}
 
@@ -619,6 +654,13 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 
 		foreach ( JSF_Bridge::merge_filter_args( $query->query_vars, $jsf_args ) as $key => $value ) {
 			$query->set( $key, $value );
+		}
+
+		// In-process AJAX render: the posted page, or 1, decides last. JSF's
+		// parser can pick `paged` up from the page URL's `?paged=2`, and a
+		// main-query loop inherits `paged` from `/page/2/` or the snapshot.
+		if ( null !== self::$ajax_page ) {
+			$query->set( 'paged', max( 1, self::$ajax_page ) );
 		}
 
 		if ( Debug::pagination_enabled() ) {

@@ -174,11 +174,11 @@ check(!isset($context['query_vars']['jet_smart_filters']), 'render context does 
 // 3. Load more: JSF looks for the wrapper inside the response before appending.
 $wrap = new ReflectionMethod(JQBEB\JSF_Provider::class, 'wrap_for_load_more');
 $provider = new JQBEB\JSF_Provider();
-$_REQUEST = ['props' => ['page' => '2', 'pages' => ['1', '2']]];
+$_POST = ['props' => ['page' => '2', 'pages' => ['1', '2']]];
 check($wrap->invoke($provider, '<li>a</li>') === '<div class="jsf-etch-loop"><li>a</li></div>', 'load-more response wrapped in the provider selector');
-$_REQUEST = ['props' => ['page' => '2']];
+$_POST = ['props' => ['page' => '2']];
 check($wrap->invoke($provider, '<li>a</li>') === '<li>a</li>', 'normal pagination stays inner HTML');
-$_REQUEST = ['props' => 'pages'];
+$_POST = ['props' => 'pages'];
 check($wrap->invoke($provider, '<li>a</li>') === '<li>a</li>', 'malformed props ignored');
 
 exit($failures ? 1 : 0);
