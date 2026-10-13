@@ -148,6 +148,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// truncate or split the loopback query string.
 		$forwarded = urlencode_deep( wp_unslash( $_REQUEST ) );
 		unset( $forwarded['action'], $forwarded['defaults'] );
+		// JSF 3.8.6 AJAX transport, sent to the page URL. `jsf_ajax=1` on the
+		// loopback makes WordPress answer with an empty 302.
+		unset( $forwarded['jsf_ajax'], $forwarded['settings'], $forwarded['query_context'], $forwarded['indexing_filters'], $forwarded['dynamic_range'], $forwarded['referrer'] );
 
 		if ( ! empty( $forwarded['query'] ) && is_array( $forwarded['query'] ) ) {
 			foreach ( $forwarded['query'] as $k => $v ) {
@@ -168,8 +171,15 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		$page_value = 0;
 		foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
 			if ( ! empty( $forwarded[ $page_key ] ) ) {
-				$page_value = absint( $forwarded[ $page_key ] );
+				$page_value = JSF_Bridge::clamp_paged( $forwarded[ $page_key ] );
 				break;
+			}
+		}
+		if ( $page_value > 0 ) {
+			foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
+				if ( isset( $forwarded[ $page_key ] ) ) {
+					$forwarded[ $page_key ] = $page_value;
+				}
 			}
 		}
 		if ( $page_value > 1 ) {
@@ -180,6 +190,17 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				$forwarded['jet_paged'] = $page_value;
 			}
 		}
+
+		// The page's own main-query vars (`?s=…&post_type=product`) travel in
+		// the referrer, not in an admin-ajax request. Such a page never uses
+		// the shared fast-path snapshot, see JSF_Bridge::main_query_url_args().
+		$url_args   = JSF_Bridge::main_query_url_args_from_url( $referrer );
+		$forwarded += urlencode_deep( $url_args );
+		// This request's own GET / POST too (JSF 3.8.6 posts to the page URL).
+		$fast_path  = JSF_Bridge::fast_path_allowed(
+			$url_args + JSF_Bridge::main_query_url_args( wp_unslash( array_merge( $_GET, $_POST ) ) ), // phpcs:ignore WordPress.Security.NonceVerification
+			(string) ( wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/' )
+		);
 
 		$base_url = strtok( $referrer, '?' );
 		$url      = add_query_arg( $forwarded, $base_url );
@@ -205,7 +226,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// ============================================================
 		$referrer_path    = wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/';
 		$direct_cache_key = JSF_Bridge::block_cache_key( $referrer_path, $query_id );
-		$direct_cached    = get_transient( $direct_cache_key );
+		$direct_cached    = $fast_path ? get_transient( $direct_cache_key ) : false;
 
 		if ( is_array( $direct_cached ) && ! empty( $direct_cached['block'] ) ) {
 
@@ -305,7 +326,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				$inner = preg_replace( '/<!--JQBEB-PROPS:[A-Za-z0-9+\/=]+-->/', '', $inner );
 				$inner = $this->ensure_non_empty_inner( $inner );
 
-				echo $inner; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+				echo $this->wrap_for_load_more( $inner ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 
 				// Props were populated by the inner WP_Query during render
 				// (via JSF's the_posts filter). update_jsf_props with null
@@ -330,7 +351,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				if ( is_array( $cached['defaults'] ?? null ) ) {
 					JSF_Bridge::remember_defaults( $query_id, $cached['defaults'] );
 				}
-				echo $cached['inner']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — inner HTML from trusted self-loopback
+				echo $this->wrap_for_load_more( $cached['inner'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — inner HTML from trusted self-loopback
 				$this->update_jsf_props(
 					$query_id,
 					$page_value,
@@ -356,7 +377,8 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			'sslverify'   => apply_filters( 'jqbeb_loopback_sslverify', true ),
 			'cookies'     => $cookies,
 			'headers'     => [
-				'X-JQBEB-Loopback' => '1',
+				'X-JQBEB-Loopback'           => '1',
+				'X-JQBEB-Loopback-Signature' => JSF_Bridge::loopback_signature( time() ),
 			],
 		] );
 
@@ -391,9 +413,29 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			], MINUTE_IN_SECONDS );
 		}
 
-		echo $inner; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		echo $this->wrap_for_load_more( $inner ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 
 		$this->update_jsf_props( $query_id, $page_value, $loopback_props );
+	}
+
+	/**
+	 * Wrap a "load more" response so JSF can find the cards to append.
+	 *
+	 * For `insert` JSF puts the response into the wrapper as is, so the
+	 * response is the wrapper's inner HTML. For `append` (pagination "Load
+	 * more") it looks for the wrapper selector INSIDE the response and
+	 * appends that element's children; with the bare inner HTML it finds
+	 * nothing and appends nothing. JSF marks a load-more request with
+	 * `props.pages` (the pages shown so far, JetEngine's listing grid reads
+	 * the same signal) and drops it on any filter change or normal page
+	 * switch, so only load-more requests get the extra wrapper.
+	 */
+	private function wrap_for_load_more( string $inner ): string {
+		$props = $_REQUEST['props'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ! is_array( $props ) || empty( $props['pages'] ) ) {
+			return $inner;
+		}
+		return '<div class="jsf-etch-loop">' . $inner . '</div>';
 	}
 
 	/**
@@ -550,7 +592,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		$jet_paged = 0;
 		foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $key ) {
 			if ( ! empty( $_REQUEST[ $key ] ) ) {
-				$jet_paged = absint( $_REQUEST[ $key ] );
+				$jet_paged = JSF_Bridge::clamp_paged( $_REQUEST[ $key ] );
 				break;
 			}
 		}

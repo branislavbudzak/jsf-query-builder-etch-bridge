@@ -46,7 +46,12 @@ class WP_Query {
     public function get($k) { return $this->query_vars[$k] ?? ''; }
     public function set($k, $v) { $this->query_vars[$k] = $v; }
     public function is_main_query() { return false; }
+    // No taxonomy query vars in these fixtures, so no term scope.
+    public $tax_query = null;
+    public function fill_query_vars($v) { return $v; }
+    public function parse_tax_query(&$v) { $this->tax_query = new WP_Tax_Query([]); }
 }
+class WP_Tax_Query { public array $queried_terms = []; public function __construct(public array $queries) {} }
 class Jet_Smart_Filters_Provider_Base {}
 
 /** Relation rows: [rel_id, parent, child]. Relation 7: dodavatel (parent) -> product (child). */

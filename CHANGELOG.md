@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased (planned 1.3.8)
+
+### Security
+- The JSF AJAX fast path no longer shares one visitor's search with another. The cached main-query snapshot is keyed by URL path and query id, and every search runs on `/` (`/?s=…&post_type=product`), so a filter click could rebuild the main query with the `s` of whoever last rendered a search (reproduced on the Poctivá poživeň staging: "syr" turned into "med" results). A page whose main query depends on WordPress public query vars in GET / POST now never writes or reads the shared snapshot; its AJAX render goes through the loopback, a real request for the visitor's own URL. The loopback is signed (`X-JQBEB-Loopback-Signature`, `JSF_Bridge::is_verified_loopback()`) and adds the referrer's public query vars to its URL.
+- Fast-path snapshots use a new key (`jqbeb_ctx2_…`), so 1.3.7 entries, which may hold another visitor's search, are never read after the update. Logged-in visitors get their own snapshot (a main-query hook can scope by the current user). New filter `jqbeb_fast_path_enabled` turns the shared snapshot off (write and read) for pages whose main query is personalized for anonymous visitors.
+- Page numbers from `jet_paged` / `pagenum` / `paged` are capped (`jqbeb_max_paged`, default 1000) on the AJAX path, the loop merge and the HTTP loopback.
+
+### Fixed
+- The HTTP loopback (fast-path cache miss) rendered nothing on JSF 3.8.6: it forwarded JSF's new page-URL AJAX transport (`jsf_ajax=1`, `settings`, `query_context`, …) and WordPress answered with an empty 302. These keys are no longer forwarded.
+- An Etch main-query loop on a WooCommerce archive inherits the main query's `jet_smart_filters = woocommerce-archive`, so the bridge never tagged it `etch-loop/<qid>`: `[jsf_etch_count]` showed 0 and the loop was missing from `JetSmartFilterSettings.props`. An inherited value that is not `etch-loop/…` is now replaced when the loop sits in a `jsf-etch-loop` wrapper.
+- A main-query loop on a term archive has `post_type = ''` and its term scope only in a taxonomy query var (`product_cat => slug`). Relation filters rejected `['']` as a post type mismatch and returned nothing, and the indexer defaults had neither the post type nor the term scope, so counts were 0 or covered the whole catalog. The defaults now carry the taxonomy query vars themselves (so the count query joins them after the JSF filters exactly like the loop, checked under the real WP parser) and the post type WP_Query would resolve, `''` counts as "not set" for relation filters, and the fast-path snapshot keeps taxonomy query vars.
+- JSF pagination "Load more" appended nothing: JSF looks for the provider wrapper inside the response before appending, and the bridge returns the wrapper's inner HTML. Requests JSF marks as load more (`props.pages`, the signal JetEngine's listing grid uses) now get the cards wrapped in `<div class="jsf-etch-loop">`.
+- Indexer counts on a search results loop ignored the search: `s` is now one of the default query keys.
+
+### Added
+- `JSF_Bridge::is_verified_loopback()`: plugins that prepare the main query (search) can tell the bridge's signed loopback from a visitor request, e.g. for per-IP rate limits. Contract in `docs/jsf-ajax-path.md`.
+
+### Known limits
+- Another JSF provider filtering the main query plus JSF filtering of an Etch main-query loop on the same page is not supported: the Etch AJAX render reproduces the page without the other provider's filters.
+
+### Compatibility
+- Workarounds in Etch loop presets keep working (`jet_smart_filters: ''`, explicit `post_type`, `tax_query` from `$term`) and can be removed after the update.
+- Fast-path keys change once (all entries rebuild on the first page view). Pages with public query vars in the URL (search results, `?product_cat=`, `?author=`) now use the slower loopback for JSF AJAX.
+
+### Verification
+- Added `php tests/main-query-archive.php`, `php tests/ajax-context-cache.php`, `php tests/provider-fast-path.php`, `php tests/foreign-provider.php` (real JSF query manager) and `php tests/tax-scope-real-parser.php` (real WP_Query / WP_Tax_Query), failing on 1.3.7.
+- Staging also showed that JSF registers `jsf` as a public query var. A `jsf` / `provider` selecting `etch-loop` is ignored by the check (otherwise every filtered archive URL would lose the fast path); another provider still counts, because it can put a search into the main query. At render the bridge also asks JSF which provider it applied, so JSF's permalink form (`/shop/jsf/woocommerce-archive/?_s=…`) never writes a snapshot either; selectors are decoded with JSF's configurable delimiter. Paths in JSF's permalink structure (`…/jsf/…`, also URL-encoded, as WP retries the rewrite match decoded) never use the snapshot.
+- Independent review in three rounds (GPT-6 Astra high); round 1 rejected rebuilding the main query from the referrer, round 2 found legacy entries, per-user scope, POST reads and the OR / filter case, round 3 a foreign JSF provider in the URL and WP's `is_tax` guard for the post type, round 4 the same provider in JSF's permalink form and the configurable delimiter, round 5 a snapshot written on a permalink path through an explicit selector (fixed) and the loopback losing another provider's main-query filters (documented as unsupported), round 6 the URL-encoded permalink segment.
+- Poctivá poživeň staging, template 177 `/kategoria/mliecne-a-syry/` with the loop workarounds removed: `[jsf_etch_count]` 49, `etch-loop/produkty` in props, option counts Rakúsko 4 and Syrex Zázrivá (158) 8; AJAX supplier 158 → 8 cards and count 8, Rakúsko → 4; load more 24 → 48 → 49 unique cards, then a filter replaces them with 4.
+
 ## 1.3.7 - 2026-10-08
 
 ### Fixed

@@ -74,7 +74,171 @@ class JSF_Bridge {
 	 * render the loop directly without a full-page HTTP loopback.
 	 */
 	public static function block_cache_key( string $url_path, string $query_id ): string {
-		return 'jqbeb_block_' . md5( $url_path . '|' . $query_id );
+		// `jqbeb_ctx2_`: entries written before 1.3.8 may hold another
+		// visitor's search, so they are never read again.
+		// Logged-in visitors get their own entry: a main-query hook can scope
+		// by the current user (author, private status), and the snapshot
+		// would carry that to everyone else.
+		$user = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+		return 'jqbeb_ctx2_' . md5( $url_path . '|' . $query_id . '|u=' . $user );
+	}
+
+	/**
+	 * Whether this request may write / read the shared fast-path snapshot.
+	 *
+	 * Same answer on both sides: no for a request whose main query depends
+	 * on WP public query vars in GET / POST (`/?s=…`), see
+	 * main_query_url_args(), and whenever the filter says so. Sites whose
+	 * main query is personalized for anonymous visitors (cart, geo, A/B in
+	 * `pre_get_posts`) must return false from the filter for those pages.
+	 *
+	 * @param array $url_args main_query_url_args() of the page URL.
+	 */
+	public static function fast_path_allowed( array $url_args, string $path = '' ): bool {
+		// JSF's permalink URL structure (`/shop/jsf/<provider>/…`, fixed
+		// rewrite segment `jsf/`) selects providers and filters in the path,
+		// where neither side can tell them apart reliably (an explicit
+		// `?jsf=` overrides the path). Such paths never use the snapshot.
+		// WP::parse_request() retries the rewrite match on urldecode()d paths
+		// (`/shop/%6asf/…`, `jsf%2F`), so check the decoded form as well.
+		if ( preg_match( '#(^|/)jsf/#i', $path ) || preg_match( '#(^|/)jsf/#i', urldecode( $path ) ) ) {
+			$url_args['jsf_permalink'] = $path;
+		}
+
+		/**
+		 * Filters whether the JSF AJAX fast path (shared main-query snapshot) is used.
+		 * False sends the AJAX render through the loopback, a real request.
+		 *
+		 * @since 1.3.8
+		 * @param bool  $allowed  Default: no public query vars in the URL / POST.
+		 * @param array $url_args Public query vars of the page URL / POST.
+		 */
+		return (bool) apply_filters( 'jqbeb_fast_path_enabled', ! $url_args, $url_args );
+	}
+
+	/**
+	 * Main-query vars a request sets through its query string or POST body.
+	 *
+	 * The WordPress public query vars that WP::parse_request() would read
+	 * (`?s=…&post_type=product`, `?product_cat=…`, `?author=…`). A page
+	 * whose main query depends on them is never served from the shared
+	 * fast-path snapshot, which is keyed by path only: its AJAX render goes
+	 * through the loopback, a real request for the visitor's own URL, so
+	 * WordPress parses and validates the vars itself. JSF's filter params
+	 * (`tax`, `meta`…), a `jsf` / `provider` selecting the Etch loop, unknown
+	 * args and `paged` / `page` do not count.
+	 *
+	 * @param array $args Unslashed request args.
+	 * @return array Raw values, as sent.
+	 */
+	public static function main_query_url_args( array $args ): array {
+		global $wp;
+
+		$public = $wp instanceof \WP ? (array) $wp->public_query_vars : [];
+		if ( ! did_action( 'parse_request' ) ) {
+			$public = (array) apply_filters( 'query_vars', $public );
+		}
+		$public = array_diff( array_filter( $public, 'is_string' ), [ 'paged', 'page' ] );
+		$found  = array_intersect_key( $args, array_flip( $public ) );
+
+		// `jsf` / `provider` select the JSF provider (`jsf` is registered as a
+		// public var for JSF's permalink URLs). Selecting the Etch loop never
+		// changes the main query; any other provider (woocommerce-archive
+		// with `_s`) may, so it counts like a main-query var.
+		$etch = static fn( $value ) => is_string( $value ) && 'etch-loop' === self::jsf_provider_id( $value );
+		if ( isset( $args['provider'] ) && ! $etch( $args['provider'] ) ) {
+			$found['provider'] = $args['provider'];
+		}
+		if ( isset( $found['jsf'] ) && $etch( $found['jsf'] ) ) {
+			unset( $found['jsf'] );
+		}
+
+		return $found;
+	}
+
+	/** Provider part of a JSF provider selector, decoded like JSF does (configurable delimiter). */
+	private static function jsf_provider_id( string $value ): string {
+		if ( function_exists( 'jet_smart_filters' ) && is_object( jet_smart_filters()->query ?? null )
+			&& is_callable( [ jet_smart_filters()->query, 'decode_provider_data' ] ) ) {
+			return (string) ( jet_smart_filters()->query->decode_provider_data( $value )['provider'] ?? '' );
+		}
+		return preg_match( '#^([^:/]+)#', $value, $m ) ? $m[1] : '';
+	}
+
+	/**
+	 * True when JSF applies another provider's filters in this request.
+	 *
+	 * Those (woocommerce-archive, epro-archive…) filter the MAIN query, e.g.
+	 * a `_s` search, whatever form the URL takes: `?jsf=…`, `provider=…` or
+	 * JSF's permalink `/shop/jsf/woocommerce-archive/`. Asking JSF for the
+	 * provider it actually selected covers all of them.
+	 */
+	public static function other_jsf_provider_active(): bool {
+		if ( ! function_exists( 'jet_smart_filters' ) || ! is_object( jet_smart_filters()->query ?? null )
+			|| ! is_callable( [ jet_smart_filters()->query, 'get_current_provider' ] ) ) {
+			return false;
+		}
+		$provider = jet_smart_filters()->query->get_current_provider( 'provider' );
+		return is_string( $provider ) && '' !== $provider && 'etch-loop' !== $provider;
+	}
+
+	/** main_query_url_args() of a URL's query string. */
+	public static function main_query_url_args_from_url( string $url ): array {
+		$args  = [];
+		$query = wp_parse_url( $url, PHP_URL_QUERY );
+		if ( is_string( $query ) && '' !== $query ) {
+			wp_parse_str( $query, $args );
+		}
+		return self::main_query_url_args( $args );
+	}
+
+	/**
+	 * Signature header value for a loopback sent at $time, see is_verified_loopback().
+	 *
+	 * Signs a timestamp, not the URL: Cloudflare / the web server normalize
+	 * the request URI (`%2A` arrives as `*`), so a URL HMAC would not match.
+	 * The header only travels server-to-server.
+	 */
+	public static function loopback_signature( int $time ): string {
+		return $time . '.' . hash_hmac( 'sha256', 'jqbeb-loopback|' . $time, wp_salt( 'auth' ) );
+	}
+
+	/**
+	 * True for the bridge's own server-to-server loopback request.
+	 *
+	 * `is_loopback()` only reads the `X-JQBEB-Loopback` header, which any
+	 * client can send. This also checks the signed timestamp (valid for
+	 * 2 minutes), so a plugin can rely on it, e.g. to keep loopbacks (all
+	 * from the server's IP) out of a per-IP rate limit.
+	 */
+	public static function is_verified_loopback(): bool {
+		$signature = $_SERVER['HTTP_X_JQBEB_LOOPBACK_SIGNATURE'] ?? '';
+		if ( ! self::is_loopback() || ! is_string( $signature ) || ! preg_match( '/^(\d{1,12})\.[0-9a-f]{64}$/', $signature, $m ) ) {
+			return false;
+		}
+		$time = (int) $m[1];
+		return abs( time() - $time ) <= 2 * MINUTE_IN_SECONDS
+			&& hash_equals( self::loopback_signature( $time ), $signature );
+	}
+
+	/**
+	 * Highest page number the bridge applies to a loop.
+	 *
+	 * JSF accepts any `jet_paged` / `pagenum` / `paged` the browser sends;
+	 * a huge value is an expensive OFFSET for nothing.
+	 */
+	public static function max_paged(): int {
+		/**
+		 * Filters the highest page number applied to an Etch loop.
+		 *
+		 * @since 1.3.8
+		 * @param int $max Default 1000.
+		 */
+		return max( 1, (int) apply_filters( 'jqbeb_max_paged', 1000 ) );
+	}
+
+	public static function clamp_paged( $value ): int {
+		return min( absint( $value ), self::max_paged() );
 	}
 
 	public function __construct() {
@@ -279,7 +443,10 @@ class JSF_Bridge {
 			return;
 		}
 
-		if ( $query->get( 'jet_smart_filters' ) ) {
+		// Already ours. Any other value is inherited: Etch's main-query loop
+		// handler copies the main query's vars, where JSF has put e.g.
+		// `woocommerce-archive` on a Woo archive. The wrapper class decides.
+		if ( str_starts_with( (string) $query->get( 'jet_smart_filters' ), 'etch-loop/' ) ) {
 			return;
 		}
 
@@ -329,7 +496,7 @@ class JSF_Bridge {
 				}
 			}
 
-			self::remember_defaults( $query_id, $default_args );
+			self::remember_defaults( $query_id, self::add_taxonomy_scope( $query, $default_args ) );
 		}
 
 		$this->stack->pop();
@@ -400,6 +567,8 @@ class JSF_Bridge {
 			} elseif ( Relation_Filters::ARG === $key ) {
 				// Resolved server-side and intersected with the baseline ID scope.
 				$base = Relation_Filters::apply( $base, $value );
+			} elseif ( 'paged' === $key ) {
+				$base['paged'] = self::clamp_paged( $value );
 			} else {
 				$base[ $key ] = $value;
 			}
@@ -431,6 +600,8 @@ class JSF_Bridge {
 			'post__in',
 			'post__not_in',
 			'paged',
+			// A search results loop inherits `s` from the main query.
+			's',
 		];
 
 		/**
@@ -444,6 +615,70 @@ class JSF_Bridge {
 		return is_array( $filtered )
 			? array_values( array_unique( array_filter( $filtered, 'is_string' ) ) )
 			: $keys;
+	}
+
+	/**
+	 * Carry a term scope set through taxonomy query vars into the defaults.
+	 *
+	 * A main-query loop on a term archive inherits `product_cat => slug`
+	 * (or `cat`, `tag`, `taxonomy` + `term`, any taxonomy query var) instead
+	 * of a `tax_query`, and `post_type => ''`, because WP_Query only resolves
+	 * both inside get_posts(). The defaults are allowlisted args that the
+	 * indexer runs as a fresh WP_Query, so without this the counts would
+	 * cover every post of the default type.
+	 *
+	 * The vars are copied as they are, not translated into a tax_query: WP
+	 * appends their clauses under the explicit tax_query's relation AFTER
+	 * JSF has merged its filters into it, and the count query must parse
+	 * them at the same stage to match the loop. The post type follows the
+	 * rule of WP_Query::get_posts().
+	 */
+	public static function add_taxonomy_scope( \WP_Query $query, array $args ): array {
+		$vars = ( new \WP_Query() )->fill_query_vars( (array) $query->query_vars );
+		unset( $vars['tax_query'] );
+
+		$probe = new \WP_Query();
+		$probe->parse_tax_query( $vars );
+		if ( ! $probe->tax_query instanceof \WP_Tax_Query || ! array_filter( $probe->tax_query->queries, 'is_array' ) ) {
+			return $args;
+		}
+
+		// Every var WP_Query::parse_tax_query() reads.
+		$keys = [
+			'taxonomy', 'term', 'cat', 'category_name', 'category__in', 'category__not_in', 'category__and',
+			'tag', 'tag_id', 'tag__in', 'tag__not_in', 'tag__and', 'tag_slug__in', 'tag_slug__and',
+		];
+		foreach ( get_taxonomies( [], 'objects' ) as $taxonomy ) {
+			if ( ! empty( $taxonomy->query_var ) && is_string( $taxonomy->query_var ) ) {
+				$keys[] = $taxonomy->query_var;
+			}
+		}
+		foreach ( array_unique( $keys ) as $key ) {
+			if ( ! empty( $vars[ $key ] ) ) {
+				$args[ $key ] = $vars[ $key ];
+			}
+		}
+
+		// WP resolves an empty post type only when its own parse_query() set
+		// is_tax (already done for the loop query at this point); category /
+		// tag archives keep the default, nested groups follow WP's flags.
+		$full      = new \WP_Query();
+		$full_vars = $full->fill_query_vars( (array) $query->query_vars );
+		$full->parse_tax_query( $full_vars );
+		$taxonomies = array_keys( $full->tax_query->queried_terms );
+		if ( empty( $args['post_type'] ) && ! empty( $query->is_tax ) ) {
+			$types = [];
+			foreach ( get_post_types( [ 'exclude_from_search' => false ] ) as $type ) {
+				$object_taxonomies = 'attachment' === $type ? get_taxonomies_for_attachments() : get_object_taxonomies( $type );
+				if ( array_intersect( $taxonomies, $object_taxonomies ) ) {
+					$types[] = $type;
+				}
+			}
+			sort( $types );
+			$args['post_type'] = ! $types ? 'any' : ( 1 === count( $types ) ? $types[0] : $types );
+		}
+
+		return $args;
 	}
 
 	public function on_render_block( $block_content, $block ) {
@@ -481,10 +716,19 @@ class JSF_Bridge {
 		// `post_id` is kept alongside `context` for backward compat
 		// with cache entries written by 1.2.x — within 1h of upgrade,
 		// in-flight transients with the old shape still resolve.
-		if ( ! self::is_loopback() && ! self::$in_ajax_render ) {
-			$cache_key = self::block_cache_key( self::current_path(), $query_id );
+		//
+		// Not for a page whose main query depends on query string / POST
+		// vars (`/?s=…&post_type=product`) or is filtered by another JSF
+		// provider (also in JSF's permalink form): the entry is shared by
+		// everyone on the path, so it would hand one visitor's search to the
+		// next. Without an entry the provider uses the loopback. The key
+		// includes the path, so a permalink like `/shop/jsf/<provider>/`
+		// never finds an entry written for a clean page.
+		$request_args = wp_unslash( array_merge( $_GET, $_POST ) ); // phpcs:ignore WordPress.Security.NonceVerification
+		if ( ! self::is_loopback() && ! self::$in_ajax_render && ! self::other_jsf_provider_active()
+			&& self::fast_path_allowed( self::main_query_url_args( $request_args ), self::current_path() ) ) {
 			set_transient(
-				$cache_key,
+				self::block_cache_key( self::current_path(), $query_id ),
 				[
 					'block'   => $block,
 					'post_id' => (int) get_queried_object_id(),
@@ -606,6 +850,13 @@ class JSF_Bridge {
 				'post_parent', 'post_parent__in', 'post_parent__not_in',
 				'post_status',
 			];
+			// Taxonomy query vars (`product_cat` on a Woo category archive).
+			// A main-query loop inherits its term scope through them.
+			foreach ( get_taxonomies( [], 'objects' ) as $taxonomy ) {
+				if ( ! empty( $taxonomy->query_var ) && is_string( $taxonomy->query_var ) ) {
+					$relevant_keys[] = $taxonomy->query_var;
+				}
+			}
 			$qv = is_array( $wp_query->query_vars ?? null ) ? $wp_query->query_vars : [];
 			foreach ( $relevant_keys as $key ) {
 				if ( ! array_key_exists( $key, $qv ) ) {
