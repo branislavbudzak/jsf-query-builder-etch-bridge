@@ -27,7 +27,9 @@ function get_queried_object_id() { return 0; }
 $GLOBALS['transients'] = [];
 function set_transient($k, $v, $t) { $GLOBALS['transients'][$k] = $v; }
 function wp_salt($s) { return 'test-salt'; }
-class WP { public array $public_query_vars = ['s', 'post_type', 'paged', 'author', 'orderby', 'product_cat']; }
+$GLOBALS['user_id'] = 0;
+function get_current_user_id() { return $GLOBALS['user_id']; }
+class WP { public array $public_query_vars = ['jsf', 's', 'post_type', 'paged', 'author', 'orderby', 'product_cat']; }
 $GLOBALS['wp'] = new WP();
 class WP_Query {
     public array $query_vars = [];
@@ -51,7 +53,11 @@ function check($condition, $label) {
 $a = JSF_Bridge::main_query_url_args_from_url('https://shop.test/?s=syr&post_type[]=product&jsf=etch-loop:produkty&tax=povod:23&utm_source=x&paged=3');
 check($a === ['s' => 'syr', 'post_type' => ['product']], 'public main-query vars kept raw (arrays too), JSF params / utm / paged ignored');
 check(JSF_Bridge::main_query_url_args_from_url('https://shop.test/kategoria/x/?jsf=etch-loop:produkty&tax=povod:23&pagenum=2') === [], 'JSF filter URL of an archive keeps the fast path');
-check(JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty') === 'jqbeb_block_' . md5('/kategoria/x/|produkty'), 'archive key unchanged from 1.3.7');
+check(!str_starts_with(JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty'), 'jqbeb_block_'), 'pre-1.3.8 entries (jqbeb_block_*) are never read');
+$GLOBALS['user_id'] = 7;
+$k7 = JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty');
+$GLOBALS['user_id'] = 0;
+check($k7 !== JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty'), 'logged-in visitor gets an own snapshot');
 
 $bridge = new JSF_Bridge();
 $block  = ['blockName' => 'etch/element', 'attrs' => ['attributes' => ['class' => 'jsf-etch-loop jsf-etch-q-produkty']], 'innerBlocks' => []];
@@ -90,6 +96,16 @@ $_SERVER['HTTP_X_JQBEB_LOOPBACK_SIGNATURE'] = JSF_Bridge::loopback_signature(tim
 check(JSF_Bridge::is_verified_loopback(), 'fresh signed loopback verified');
 unset($_SERVER['HTTP_X_JQBEB_LOOPBACK']);
 check(!JSF_Bridge::is_verified_loopback(), 'signature without the loopback header rejected');
+
+// Opt-out filter applies to write and read alike.
+add_filter('jqbeb_fast_path_enabled', static fn($allowed) => $_SERVER['REQUEST_URI'] === '/personal/' ? false : $allowed);
+$_SERVER['REQUEST_URI'] = '/personal/'; $_GET = []; $_POST = [];
+$GLOBALS['transients'] = [];
+$bridge->on_render_block('<ul></ul>', $block);
+check($GLOBALS['transients'] === [], 'jqbeb_fast_path_enabled false: no snapshot written');
+check(!JSF_Bridge::fast_path_allowed([]), 'jqbeb_fast_path_enabled false: no snapshot read');
+$_SERVER['REQUEST_URI'] = '/';
+check(JSF_Bridge::fast_path_allowed([]) && !JSF_Bridge::fast_path_allowed(['s' => 'x']), 'default: fast path only without public URL vars');
 
 // Page cap.
 check(JSF_Bridge::clamp_paged('999999') === 1000 && JSF_Bridge::clamp_paged('3') === 3, 'paged capped at 1000 by default');

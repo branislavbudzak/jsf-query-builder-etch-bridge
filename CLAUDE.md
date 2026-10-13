@@ -93,8 +93,8 @@ wp_footer         p5     JSF bridge outputs window.JQBEBData (BEFORE wp_print_fo
 - CMT geo queries (v1.3.6): the JetEngine Location & Distance filter sends only `latitude` / `longitude` / `distance` / `units`. On a CMT post type JetEngine then warns on the missing `raw_field` (`map-field-storage.php:489`, ~50 per filtered page) and drops the geo query unless `lat_field` / `lng_field` are set too, falling back to a `wp_postmeta` JOIN that matches nothing. `complete_geo_query_late()` (p75) fills all three from the post type's single map field. Unlike the p70 CMT redirect this one is deliberately NOT scoped to `etch-loop/`, because the indexer count queries need it as well. Regression: `php tests/cmt-geo-query.php`.
 - JetEngine relation filters (v1.3.7): JetEngine turns `related_children*<id>` / `related_parents*<id>` into `post__in`, which the client whitelist must drop. `Relation_Filters::extract()` (final-query p-20, `etch-loop` only) takes the clauses out first and keeps a plan under `jqbeb_relation_filters`; `merge_filter_args()` resolves it through the JE relation API and intersects it with the trusted baseline (baseline order kept, baseline `post__not_in` subtracted because WP_Query ignores it once `post__in` is set), so results, indexer counts and dynamic range share one path. Invalid input (0, empty, malformed, unknown relation, wrong post type, mixed OR group) resolves to `post__in = [0]`, never to "no restriction": JE's `get_children( 0 )` drops the parent condition. Counts read the relation table, not `wp_postmeta`. Regression: `php tests/relation-filters.php`.
 - Any site flag that scopes the loop in its own `pre_get_posts` must be added via `jqbeb_jsf_default_query_keys`, or AJAX indexer counts run without it (nearcharger-core-logic adds `nc_light`).
-- Fast-path snapshot (v1.3.8) is keyed by path + query id and shared by all visitors. A page whose main query depends on WP public query vars in GET / POST (`/?s=…`) never writes or reads it and goes through the loopback; never rebuild such a request from the referrer. Never put a visitor-specific value into the snapshot. Regression: `php tests/ajax-context-cache.php`.
-- Etch main-query loops (v1.3.8) inherit the main query's vars: a foreign `jet_smart_filters` tag is replaced, `post_type = ''` and taxonomy query vars become post type + `tax_query` in the indexer defaults, `''` is "not set" for relation filters. Regression: `php tests/main-query-archive.php`.
+- Fast-path snapshot (v1.3.8): key `jqbeb_ctx2_` + path + query id + user id (logged-in visitors isolated, anonymous shared; the prefix retires 1.3.7 `jqbeb_block_*` entries). A request whose main query depends on WP public query vars in GET / POST (`/?s=…`) never writes or reads it (`fast_path_allowed()`, same check on both sides, filter `jqbeb_fast_path_enabled` for anonymous personalization) and goes through the signed loopback; never rebuild such a request from the referrer. Regressions: `php tests/ajax-context-cache.php`, `php tests/provider-fast-path.php`.
+- Etch main-query loops (v1.3.8) inherit the main query's vars: a foreign `jet_smart_filters` tag is replaced, taxonomy query vars are COPIED into the indexer defaults (never translated to tax_query: WP joins them after the JSF merge), `post_type = ''` is resolved like WP_Query, `''` is "not set" for relation filters. Regressions: `php tests/main-query-archive.php`, `php tests/tax-scope-real-parser.php` (real WP parser).
 - Load more (v1.3.8): requests with `props.pages` get the inner HTML wrapped in `<div class="jsf-etch-loop">`, otherwise JSF appends nothing. JSF 3.8.6 posts AJAX to the page URL, so `wp_doing_ajax()` is false there; use `JSF_Bridge::$in_ajax_render`.
 
 ## Wrapper class conventions
@@ -138,13 +138,14 @@ docs/                                   agent deep dives (not shipped in the ZIP
 ## Filterable behaviour
 
 - `jqbeb_loopback_sslverify` (default `false`) - set `true` on production for SSL verification on the JSF AJAX self-loopback.
-- `jqbeb_loopback_cache_enabled` (`true`, `$cache_user_id`) - disable the 60-second per-user rendered-HTML loopback cache on sites with anonymous personalized content (cart, geo, A/B).
+- `jqbeb_loopback_cache_enabled` (`true`, `$cache_user_id`) - disable the 60-second per-user rendered-HTML loopback cache on sites with anonymous personalized content (cart, geo, A/B). Such sites also need `jqbeb_fast_path_enabled`, the fast path runs before the loopback.
 - `jqbeb_jsf_default_query_keys` (v1.3.4+) - allowlist of `query_vars` stored as the JSF provider default query for the indexer.
 - `jqbeb_range_cmt_override_enabled` (`true`, `$args`, `$instance`) - opt out of the v1.0.2 CMT-aware Range filter min/max recompute.
 - `jqbeb_loop_context_block_names` (`['jet-engine/data-store-button']`) - blocks whose render gets the JE `current_object` sync. Never add Etch's own dynamic blocks or JE Dynamic Field / Image / Link.
 - `jqbeb_empty_results_payload` (`'<!--jqbeb:empty-results-->'`, `$inner`) - sentinel for zero-result AJAX renders; JSF treats `''` as "no update", so the sentinel forces the wrapper to clear.
 - `jqbeb_empty_state_default_hide_enabled` (`true`) - disable the injected CSS that hides `.jsf-etch-empty-state:not(.is-active)` and ship your own.
 - `jqbeb_count_late_substitution_enabled` (`true`) - disable the output buffer that fills in `[jsf_etch_count]` values late on the front end.
+- `jqbeb_fast_path_enabled` (v1.3.8, `$allowed`, `$url_args`) - return false for pages whose main query is personalized for anonymous visitors; they then use the loopback.
 - `jqbeb_max_paged` (v1.3.8, `1000`) - highest page number applied to a loop from `jet_paged` / `pagenum` / `paged`.
 - `JSF_Bridge::is_verified_loopback()` (v1.3.8) - true only for the bridge's own signed loopback (`X-JQBEB-Loopback-Signature`), e.g. to keep it out of a per-IP rate limit. Contract in `docs/jsf-ajax-path.md`.
 
@@ -189,5 +190,5 @@ for f in jsf-query-builder-etch-bridge.php includes/*.php; do php -l "$f"; done
 for t in tests/*.php; do php "$t"; done
 
 # Which JSF AJAX path did a request take? Present = fast path, absent = loopback
-wp transient get jqbeb_block_$(php -r 'echo md5("/your-path/|default");')
+wp transient get jqbeb_ctx2_$(php -r 'echo md5("/your-path/|default|u=0");')
 ```

@@ -4,7 +4,7 @@ Deep dive moved out of `CLAUDE.md`. Read before touching `class-jsf-bridge.php` 
 
 ## Direct in-process render (v0.10.0+)
 
-JSF AJAX (filter / pagination / sort clicks) does NOT do an HTTP loopback to the original page URL. Instead, the bridge caches the parsed `etch/element` wrapper block tree in a transient at page render time (`JSF_Bridge::on_render_block` → `set_transient( JSF_Bridge::block_cache_key( $url_path, $query_id ), [block, post_id, context], HOUR_IN_SECONDS )`), and `JSF_Provider::ajax_get_content` retrieves it and renders it in-process via `render_block()`. Mirrors what JetEngine's listing-grid provider does (`get_render_instance('listing-grid', $attrs)->render()`).
+JSF AJAX (filter / pagination / sort clicks) does NOT do an HTTP loopback to the original page URL. Instead, the bridge caches the parsed `etch/element` wrapper block tree in a transient at page render time (`JSF_Bridge::on_render_block` → `set_transient( JSF_Bridge::block_cache_key( $url_path, $query_id ), [block, post_id, context], HOUR_IN_SECONDS )`, key format in "Pages whose main query depends on URL vars" below), and `JSF_Provider::ajax_get_content` retrieves it and renders it in-process via `render_block()`. Mirrors what JetEngine's listing-grid provider does (`get_render_instance('listing-grid', $attrs)->render()`).
 
 Critical mechanism: all bridge hooks (`pre_render_block`, `pre_get_posts`, `render_block`, JE bridge equivalents) bail on `wp_doing_ajax() || is_admin()` BY DEFAULT. During in-process AJAX render they must fire normally (so the inner WP_Query gets re-tagged and JSF's provider hook can re-apply paged + filter args). The bypass is the static flag `JSF_Bridge::$in_ajax_render` - set true around the `render_block()` call, hooks check `! self::$in_ajax_render && ( wp_doing_ajax() || is_admin() )` to early-return. JE_Bridge reads the same flag (both classes are in the `JQBEB` namespace, so unqualified reference resolves).
 
@@ -30,6 +30,10 @@ The snapshot is keyed by path + query id and shared by every visitor of that pat
 
 Rule now: `JSF_Bridge::main_query_url_args()` returns the WordPress public query vars (`$wp->public_query_vars`, minus `paged` / `page`) present in GET / POST. If the rendering request has any, no snapshot is written; if the AJAX referrer has any, the fast path is skipped. That AJAX render goes through the HTTP loopback, a real request for the visitor's own URL with their cookies, so WordPress and every plugin parse and prepare the main query exactly as on page load. JSF's own URL params (`jsf`, `tax`, `meta`, `sort`, `pagenum`…) are not public vars, so archives with filters in the URL keep the fast path. The loopback adds the referrer's public vars to its URL (an admin-ajax request does not carry them) and drops JSF 3.8.6's AJAX transport keys (`jsf_ajax`, `settings`, `query_context`, `indexing_filters`, `dynamic_range`, `referrer`): with `jsf_ajax=1` WordPress answered the loopback with an empty 302, so every cache miss on JSF 3.8.6 rendered nothing.
 
+The same check runs on both sides (`JSF_Bridge::fast_path_allowed()`): at render on the page's GET / POST, at AJAX time on the referrer plus the AJAX request's own GET / POST. The filter `jqbeb_fast_path_enabled` ( `$allowed`, `$url_args` ) can turn the fast path off for more pages, and must for any page whose main query is personalized for anonymous visitors (cart, geo, A/B in `pre_get_posts`): the snapshot is shared, and the public-var check is not a general cross-visitor isolation.
+
+Key since 1.3.8: `jqbeb_ctx2_` + md5( path | query id | u=<user id> ). The new prefix makes 1.3.7 entries (`jqbeb_block_*`, which may hold another visitor's search) unreadable right after the update. Logged-in visitors get their own entry, because a main-query hook may scope by the current user (author, private status) and the rebuilt query never re-runs it. Anonymous visitors share one entry per path and query id.
+
 JSF 3.8.6 sends its AJAX request to the page URL (`referrer_url`), not to admin-ajax, so `wp_doing_ajax()` is false there. Code that must skip the AJAX render checks `JSF_Bridge::$in_ajax_render`.
 
 ## Contract for plugins that prepare the main query (v1.3.8)
@@ -46,7 +50,7 @@ A plugin that prepares a search or other URL-driven main query in `pre_get_posts
 Etch's `WpMainQueryLoopHandler` builds its WP_Query from `$wp_query->query_vars` plus the preset args. On a Woo archive those vars carry `jet_smart_filters = woocommerce-archive`, `post_type = ''` and the term only as `product_cat => slug`.
 
 - `tag_query_for_jsf()` replaces any inherited `jet_smart_filters` that does not start with `etch-loop/`.
-- `add_taxonomy_scope()`: when taxonomy query vars add clauses, the stored defaults get the whole tax query as WP's own `parse_tax_query()` builds it (var clauses under the explicit tax_query's relation, identical clauses removed), and an empty `post_type` resolved with the rule of `WP_Query::get_posts()`. Category / tag only: WP's default post type stays.
+- `add_taxonomy_scope()`: when taxonomy query vars add clauses (WP's own `parse_tax_query()` on a probe), the vars themselves (`product_cat`, `taxonomy` + `term`, `cat`, `tag`…) are copied into the defaults, NOT translated into a tax_query. WP appends their clauses under the explicit tax_query's relation after JSF merged its filters into it; a pre-translated tax_query gave `(X OR A) AND B` for the counts while the loop ran `X AND B AND A` (review round 2, `tests/tax-scope-real-parser.php` checks both under the real WP parser). An empty `post_type` is resolved with the rule of `WP_Query::get_posts()`; category / tag only keeps WP's default post type.
 - `capture_render_context()` keeps taxonomy query vars, so the fast-path render of a term archive path stays in the term.
 - `Relation_Filters` treats `''` as "post type not set".
 
@@ -60,7 +64,7 @@ JSF appends on load more by finding `providerSelectorData.list || selector` (`.j
 
 ## Which path did a request take?
 
-`wp transient get jqbeb_block_$(php -r 'echo md5("/your-path/|default");')`. A page with public query vars in its URL (search) always takes the loopback. Present means fast path, absent means loopback. Loading the page yourself warms it, so a single manual page view flips the system to the fast path mid-test.
+`wp transient get jqbeb_ctx2_$(php -r 'echo md5("/your-path/|default|u=0");')` (anonymous; `u=<id>` for a logged-in user). A page with public query vars in its URL (search) always takes the loopback. Present means fast path, absent means loopback. Loading the page yourself warms it, so a single manual page view flips the system to the fast path mid-test.
 
 ## Cache invalidation
 

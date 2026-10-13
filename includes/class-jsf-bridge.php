@@ -74,7 +74,36 @@ class JSF_Bridge {
 	 * render the loop directly without a full-page HTTP loopback.
 	 */
 	public static function block_cache_key( string $url_path, string $query_id ): string {
-		return 'jqbeb_block_' . md5( $url_path . '|' . $query_id );
+		// `jqbeb_ctx2_`: entries written before 1.3.8 may hold another
+		// visitor's search, so they are never read again.
+		// Logged-in visitors get their own entry: a main-query hook can scope
+		// by the current user (author, private status), and the snapshot
+		// would carry that to everyone else.
+		$user = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+		return 'jqbeb_ctx2_' . md5( $url_path . '|' . $query_id . '|u=' . $user );
+	}
+
+	/**
+	 * Whether this request may write / read the shared fast-path snapshot.
+	 *
+	 * Same answer on both sides: no for a request whose main query depends
+	 * on WP public query vars in GET / POST (`/?s=…`), see
+	 * main_query_url_args(), and whenever the filter says so. Sites whose
+	 * main query is personalized for anonymous visitors (cart, geo, A/B in
+	 * `pre_get_posts`) must return false from the filter for those pages.
+	 *
+	 * @param array $url_args main_query_url_args() of the page URL.
+	 */
+	public static function fast_path_allowed( array $url_args ): bool {
+		/**
+		 * Filters whether the JSF AJAX fast path (shared main-query snapshot) is used.
+		 * False sends the AJAX render through the loopback, a real request.
+		 *
+		 * @since 1.3.8
+		 * @param bool  $allowed  Default: no public query vars in the URL / POST.
+		 * @param array $url_args Public query vars of the page URL / POST.
+		 */
+		return (bool) apply_filters( 'jqbeb_fast_path_enabled', ! $url_args, $url_args );
 	}
 
 	/**
@@ -85,8 +114,8 @@ class JSF_Bridge {
 	 * whose main query depends on them is never served from the shared
 	 * fast-path snapshot, which is keyed by path only: its AJAX render goes
 	 * through the loopback, a real request for the visitor's own URL, so
-	 * WordPress parses and validates the vars itself. JSF's own URL params,
-	 * unknown args and `paged` / `page` do not count.
+	 * WordPress parses and validates the vars itself. JSF's own URL params
+	 * (`jsf`, `tax`, `meta`…), unknown args and `paged` / `page` do not count.
 	 *
 	 * @param array $args Unslashed request args.
 	 * @return array Raw values, as sent.
@@ -98,7 +127,9 @@ class JSF_Bridge {
 		if ( ! did_action( 'parse_request' ) ) {
 			$public = (array) apply_filters( 'query_vars', $public );
 		}
-		$public = array_diff( array_filter( $public, 'is_string' ), [ 'paged', 'page' ] );
+		// `jsf` is JSF's own provider selector (registered as a public var for
+		// its permalink URLs); it never changes the main query.
+		$public = array_diff( array_filter( $public, 'is_string' ), [ 'paged', 'page', 'jsf' ] );
 
 		return array_intersect_key( $args, array_flip( $public ) );
 	}
@@ -542,37 +573,49 @@ class JSF_Bridge {
 	 * Carry a term scope set through taxonomy query vars into the defaults.
 	 *
 	 * A main-query loop on a term archive inherits `product_cat => slug`
-	 * (or `cat`, `tag`, any taxonomy query var) instead of a `tax_query`,
-	 * and `post_type => ''`, because WP_Query only resolves both inside
-	 * get_posts(). The defaults are allowlisted args that the indexer
-	 * runs as a fresh WP_Query, so without this the counts would cover
-	 * every post of the default type. Uses WP's own parser for the
-	 * clauses and the same post type rule as WP_Query::get_posts().
+	 * (or `cat`, `tag`, `taxonomy` + `term`, any taxonomy query var) instead
+	 * of a `tax_query`, and `post_type => ''`, because WP_Query only resolves
+	 * both inside get_posts(). The defaults are allowlisted args that the
+	 * indexer runs as a fresh WP_Query, so without this the counts would
+	 * cover every post of the default type.
+	 *
+	 * The vars are copied as they are, not translated into a tax_query: WP
+	 * appends their clauses under the explicit tax_query's relation AFTER
+	 * JSF has merged its filters into it, and the count query must parse
+	 * them at the same stage to match the loop. The post type follows the
+	 * rule of WP_Query::get_posts().
 	 */
 	public static function add_taxonomy_scope( \WP_Query $query, array $args ): array {
 		$vars = ( new \WP_Query() )->fill_query_vars( (array) $query->query_vars );
+		unset( $vars['tax_query'] );
 
-		// Only when taxonomy query vars add something to the explicit tax_query.
-		$vars_only = new \WP_Query();
-		$probe     = $vars;
-		unset( $probe['tax_query'] );
-		$vars_only->parse_tax_query( $probe );
-		if ( ! $vars_only->tax_query instanceof \WP_Tax_Query || ! array_filter( $vars_only->tax_query->queries, 'is_array' ) ) {
+		$probe = new \WP_Query();
+		$probe->parse_tax_query( $vars );
+		if ( ! $probe->tax_query instanceof \WP_Tax_Query || ! array_filter( $probe->tax_query->queries, 'is_array' ) ) {
 			return $args;
 		}
 
-		// The whole tax query exactly as WP_Query builds it, so the counts use
-		// the same Boolean structure as the loop (WP appends the var clauses
-		// to the explicit tax_query, under ITS relation).
-		$probe = new \WP_Query();
-		$probe->parse_tax_query( $vars );
-		// A term archive sets both `taxonomy`+`term` and the taxonomy's own
-		// query var, which WP turns into two identical clauses.
-		$queries = $probe->tax_query->queries;
-		$clauses = array_values( array_unique( array_filter( $queries, 'is_array' ), SORT_REGULAR ) );
-		$args['tax_query'] = [ 'relation' => $queries['relation'] ?? 'AND' ] + $clauses;
+		// Every var WP_Query::parse_tax_query() reads.
+		$keys = [
+			'taxonomy', 'term', 'cat', 'category_name', 'category__in', 'category__not_in', 'category__and',
+			'tag', 'tag_id', 'tag__in', 'tag__not_in', 'tag__and', 'tag_slug__in', 'tag_slug__and',
+		];
+		foreach ( get_taxonomies( [], 'objects' ) as $taxonomy ) {
+			if ( ! empty( $taxonomy->query_var ) && is_string( $taxonomy->query_var ) ) {
+				$keys[] = $taxonomy->query_var;
+			}
+		}
+		foreach ( array_unique( $keys ) as $key ) {
+			if ( ! empty( $vars[ $key ] ) ) {
+				$args[ $key ] = $vars[ $key ];
+			}
+		}
 
-		$taxonomies = array_keys( $probe->tax_query->queried_terms );
+		// WP takes the queried taxonomies from the whole tax query.
+		$full      = new \WP_Query();
+		$full_vars = $full->fill_query_vars( (array) $query->query_vars );
+		$full->parse_tax_query( $full_vars );
+		$taxonomies = array_keys( $full->tax_query->queried_terms );
 		if ( empty( $args['post_type'] ) && array_diff( $taxonomies, [ 'category', 'post_tag' ] ) ) {
 			$types = [];
 			foreach ( get_post_types( [ 'exclude_from_search' => false ] ) as $type ) {
@@ -629,7 +672,7 @@ class JSF_Bridge {
 		// on the path, so it would hand one visitor's search to the next.
 		// The provider sends those pages through the loopback instead.
 		$request_args = wp_unslash( array_merge( $_GET, $_POST ) ); // phpcs:ignore WordPress.Security.NonceVerification
-		if ( ! self::is_loopback() && ! self::$in_ajax_render && ! self::main_query_url_args( $request_args ) ) {
+		if ( ! self::is_loopback() && ! self::$in_ajax_render && self::fast_path_allowed( self::main_query_url_args( $request_args ) ) ) {
 			set_transient(
 				self::block_cache_key( self::current_path(), $query_id ),
 				[

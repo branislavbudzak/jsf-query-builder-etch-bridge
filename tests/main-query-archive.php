@@ -131,21 +131,14 @@ check($plain->get('jet_smart_filters') === 'woocommerce-archive', 'queries outsi
 // 2. Defaults carry the term scope and the post type WP_Query would resolve.
 $defaults = JQBEB\JSF_Bridge::trusted_defaults('produkty');
 check($defaults['post_type'] === 'product', 'empty post_type resolves to the taxonomy object type');
-$flat = json_encode($defaults['tax_query']);
-check(str_contains($flat, '"product_cat"') && str_contains($flat, '"mliecne-a-syry"'), 'defaults carry the term scope');
-check(str_contains($flat, '"product_visibility"'), 'existing tax_query (Woo visibility) kept');
-check(($defaults['tax_query']['relation'] ?? '') === 'AND', 'term scope AND-ed with the existing tax_query');
-
-$or = JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query(['post_type' => 'product', 'product_cat' => 'syry', 'tax_query' => ['relation' => 'OR', ['taxonomy' => 'povod', 'field' => 'slug', 'terms' => ['at']]]]), ['post_type' => 'product']);
-check($or['tax_query']['relation'] === 'OR' && count(array_filter($or['tax_query'], 'is_array')) === 2, 'var clause joins the explicit tax_query under its own relation, like WP_Query');
-$dup = JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query(['post_type' => '', 'product_cat' => 'syry', 'taxonomy' => 'product_cat', 'term' => 'syry']), []);
-check(count(array_filter($dup['tax_query'], 'is_array')) === 1, 'taxonomy+term duplicate of the query var clause removed');
+check(($defaults['product_cat'] ?? null) === 'mliecne-a-syry', 'defaults carry the taxonomy query var (term scope)');
+check(($defaults['tax_query'] ?? null) === $visibility, 'explicit tax_query (Woo visibility) kept as is, WP joins the var clause like in the loop');
 $shared = JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query(['post_type' => '', 'povod' => 'rakusko']), []);
 check($shared['post_type'] === ['dodavatel', 'product'], 'taxonomy on several types resolves to all of them');
 $cat = JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query(['post_type' => '', 'category_name' => 'zapisky']), []);
-check(!isset($cat['post_type']) && isset($cat['tax_query']), 'category archive keeps WP default post type');
+check(!isset($cat['post_type']) && ($cat['category_name'] ?? '') === 'zapisky', 'category archive keeps WP default post type, var copied');
 $typed = JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query(['post_type' => 'product', 'product_cat' => 'a,b']), ['post_type' => 'product']);
-check($typed['post_type'] === 'product' && $typed['tax_query'][0]['terms'] === ['a', 'b'], 'explicit post_type kept, multi-term var parsed');
+check($typed['post_type'] === 'product' && $typed['product_cat'] === 'a,b', 'explicit post_type kept, multi-term var copied raw');
 $nc = ['post_type' => 'ad-listing', 'meta_query' => [['key' => 'a', 'value' => 1]]];
 check(JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query($nc), $nc) === $nc, 'loops without taxonomy query vars are unchanged');
 
@@ -158,7 +151,7 @@ $GLOBALS['wpdb'] = new class { public $term_relationships = 'tr'; public $term_t
     public function prepare($sql, ...$a) { return $sql; } public function get_results($sql) { return []; } };
 // Count query returns no IDs in this stub; the args it was built from are what matters.
 $bridge->compute_indexed_counts(null, 'etch-loop/produkty', $GLOBALS['jsf']->query->get_query_args(), $indexer);
-check(WP_Query::$last_args['post_type'] === 'product' && str_contains(json_encode(WP_Query::$last_args['tax_query']), 'mliecne-a-syry'), 'indexer count query has post type and term scope');
+check(WP_Query::$last_args['post_type'] === 'product' && (WP_Query::$last_args['product_cat'] ?? '') === 'mliecne-a-syry', 'indexer count query has post type and term scope');
 
 // Relation filter on a loop whose own post_type is still ''.
 $plan = [['relation' => 'AND', 'clauses' => [['direction' => 'children', 'rel_id' => 7, 'ids' => [158]]]]];

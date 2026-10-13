@@ -196,6 +196,10 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// the shared fast-path snapshot, see JSF_Bridge::main_query_url_args().
 		$url_args   = JSF_Bridge::main_query_url_args_from_url( $referrer );
 		$forwarded += urlencode_deep( $url_args );
+		// This request's own GET / POST too (JSF 3.8.6 posts to the page URL).
+		$fast_path  = JSF_Bridge::fast_path_allowed(
+			$url_args + JSF_Bridge::main_query_url_args( wp_unslash( array_merge( $_GET, $_POST ) ) ) // phpcs:ignore WordPress.Security.NonceVerification
+		);
 
 		$base_url = strtok( $referrer, '?' );
 		$url      = add_query_arg( $forwarded, $base_url );
@@ -221,7 +225,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// ============================================================
 		$referrer_path    = wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/';
 		$direct_cache_key = JSF_Bridge::block_cache_key( $referrer_path, $query_id );
-		$direct_cached    = $url_args ? false : get_transient( $direct_cache_key );
+		$direct_cached    = $fast_path ? get_transient( $direct_cache_key ) : false;
 
 		if ( is_array( $direct_cached ) && ! empty( $direct_cached['block'] ) ) {
 
