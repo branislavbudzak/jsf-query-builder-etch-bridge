@@ -168,8 +168,15 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		$page_value = 0;
 		foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
 			if ( ! empty( $forwarded[ $page_key ] ) ) {
-				$page_value = absint( $forwarded[ $page_key ] );
+				$page_value = JSF_Bridge::clamp_paged( $forwarded[ $page_key ] );
 				break;
+			}
+		}
+		if ( $page_value > 0 ) {
+			foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $page_key ) {
+				if ( isset( $forwarded[ $page_key ] ) ) {
+					$forwarded[ $page_key ] = $page_value;
+				}
 			}
 		}
 		if ( $page_value > 1 ) {
@@ -180,6 +187,11 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				$forwarded['jet_paged'] = $page_value;
 			}
 		}
+
+		// The page's own main-query vars (`?s=…&post_type=product`) travel in
+		// the referrer, not in an admin-ajax request.
+		$url_vars  = JSF_Bridge::url_query_vars_from_url( $referrer );
+		$forwarded += urlencode_deep( $url_vars );
 
 		$base_url = strtok( $referrer, '?' );
 		$url      = add_query_arg( $forwarded, $base_url );
@@ -204,7 +216,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// referrer) we fall through to the HTTP loopback below.
 		// ============================================================
 		$referrer_path    = wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/';
-		$direct_cache_key = JSF_Bridge::block_cache_key( $referrer_path, $query_id );
+		$direct_cache_key = JSF_Bridge::block_cache_key( $referrer_path, $query_id, $url_vars );
 		$direct_cached    = get_transient( $direct_cache_key );
 
 		if ( is_array( $direct_cached ) && ! empty( $direct_cached['block'] ) ) {
@@ -237,8 +249,24 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			if ( $context ) {
 				$fake_query = JSF_Bridge::build_context_query( $context );
 				if ( $fake_query instanceof \WP_Query ) {
+					JSF_Bridge::apply_url_query_vars( $fake_query, $url_vars );
 					$GLOBALS['wp_query']     = $fake_query;
 					$GLOBALS['wp_the_query'] = $fake_query;
+
+					/**
+					 * Fires after the main query is rebuilt for a JSF AJAX render,
+					 * before the loop renders. The rebuilt query never runs, so
+					 * `pre_get_posts` does not see it: a plugin that prepares the
+					 * main query there (search engine marker, accepted search
+					 * text) re-applies the same vars here. Etch's main-query loop
+					 * copies them into its own query.
+					 *
+					 * @since 1.3.8
+					 * @param \WP_Query $fake_query     Rebuilt main query, also in $wp_query.
+					 * @param array     $context        Cached snapshot it was built from.
+					 * @param array     $url_query_vars This visitor's URL query vars (unslashed strings).
+					 */
+					do_action( 'jqbeb_ajax_context_restored', $fake_query, $context, $url_vars );
 				}
 			}
 
@@ -305,7 +333,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				$inner = preg_replace( '/<!--JQBEB-PROPS:[A-Za-z0-9+\/=]+-->/', '', $inner );
 				$inner = $this->ensure_non_empty_inner( $inner );
 
-				echo $inner; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+				echo $this->wrap_for_load_more( $inner ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 
 				// Props were populated by the inner WP_Query during render
 				// (via JSF's the_posts filter). update_jsf_props with null
@@ -330,7 +358,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				if ( is_array( $cached['defaults'] ?? null ) ) {
 					JSF_Bridge::remember_defaults( $query_id, $cached['defaults'] );
 				}
-				echo $cached['inner']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — inner HTML from trusted self-loopback
+				echo $this->wrap_for_load_more( $cached['inner'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — inner HTML from trusted self-loopback
 				$this->update_jsf_props(
 					$query_id,
 					$page_value,
@@ -391,9 +419,29 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			], MINUTE_IN_SECONDS );
 		}
 
-		echo $inner; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		echo $this->wrap_for_load_more( $inner ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 
 		$this->update_jsf_props( $query_id, $page_value, $loopback_props );
+	}
+
+	/**
+	 * Wrap a "load more" response so JSF can find the cards to append.
+	 *
+	 * For `insert` JSF puts the response into the wrapper as is, so the
+	 * response is the wrapper's inner HTML. For `append` (pagination "Load
+	 * more") it looks for the wrapper selector INSIDE the response and
+	 * appends that element's children; with the bare inner HTML it finds
+	 * nothing and appends nothing. JSF marks a load-more request with
+	 * `props.pages` (the pages shown so far, JetEngine's listing grid reads
+	 * the same signal) and drops it on any filter change or normal page
+	 * switch, so only load-more requests get the extra wrapper.
+	 */
+	private function wrap_for_load_more( string $inner ): string {
+		$props = $_REQUEST['props'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ! is_array( $props ) || empty( $props['pages'] ) ) {
+			return $inner;
+		}
+		return '<div class="jsf-etch-loop">' . $inner . '</div>';
 	}
 
 	/**
@@ -550,7 +598,7 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		$jet_paged = 0;
 		foreach ( [ 'jet_paged', 'paged', 'pagenum' ] as $key ) {
 			if ( ! empty( $_REQUEST[ $key ] ) ) {
-				$jet_paged = absint( $_REQUEST[ $key ] );
+				$jet_paged = JSF_Bridge::clamp_paged( $_REQUEST[ $key ] );
 				break;
 			}
 		}

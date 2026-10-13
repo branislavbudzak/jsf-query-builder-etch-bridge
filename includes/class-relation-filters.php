@@ -329,7 +329,9 @@ class Relation_Filters {
 			return false;
 		}
 
-		$types = array_filter( (array) $post_type, 'is_string' );
+		// '' is "not set": a main-query loop on a term archive inherits it,
+		// and WP_Query resolves the real type itself.
+		$types = array_filter( (array) $post_type, static fn( $type ) => is_string( $type ) && '' !== $type );
 		if ( ! $types || in_array( 'any', $types, true ) ) {
 			return true;
 		}

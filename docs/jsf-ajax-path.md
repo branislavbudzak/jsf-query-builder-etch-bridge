@@ -24,9 +24,44 @@ if the transient is gone (expired, never rendered for this URL+query_id, or extr
 
 `JSF_Bridge::current_path()` keys the transient on the path the BROWSER sees, because the read side looks it up by `wp_get_referer()`. TranslatePress SEO Pack's `Slug_Manager::translate_request_uri()` (`plugins_loaded` p3) overwrites `$_SERVER['REQUEST_URI']` with the default-language slug and stashes the real one in the global `$TRP_ORIGINAL_REQUEST_URI`, so `current_path()` prefers that global when set. Without it, every translated URL writes under the default-language key (clobbering it) and misses its own lookup forever, pinning that language to the slow loopback. Any other plugin that rewrites `REQUEST_URI` before block render will need the same treatment.
 
+## Cache key vs search and URL query vars (v1.3.8)
+
+Every search runs on `/` (`/?s=…&post_type=product`), so a path-only key let a filter click rebuild the main query with the `s` of whoever last rendered a search. Now:
+
+- `block_cache_key( $path, $qid, $url_query_vars )` adds the sorted NAMES of the URL's main-query vars, limited to `cache_key_query_vars()` (`s`, `post_type`, taxonomy query vars, filter `jqbeb_cache_key_query_vars`). Names, not values, so different searches share one entry and arbitrary public vars cannot multiply entries. A path without such vars keeps the 1.3.7 key.
+- `url_query_vars()` reads WP public query vars (`$wp->public_query_vars`, minus `paged` / `page`) from `$_GET` at render and from the referrer at AJAX time. At render their values are removed from the snapshot (`context.query_vars`), so no visitor's search text is stored. `apply_url_query_vars()` puts the requesting visitor's values into the rebuilt query; `post_type` must be publicly queryable, as in `WP::parse_request()`.
+- The HTTP loopback also adds these vars from the referrer (an admin-ajax request does not carry them).
+
+JSF 3.8.6 sends its AJAX request to the page URL (`referrer_url`), not to admin-ajax, so `wp_doing_ajax()` is false there. Test code that must skip the AJAX render checks `JSF_Bridge::$in_ajax_render`.
+
+## Contract: re-preparing the main query for an AJAX render (v1.3.8)
+
+The rebuilt main query never runs, so `pre_get_posts` never sees it. A plugin that prepares the main query there (Poctivá poživeň's search sets JetSearch's marker `_poziven_jetsearch` and the accepted `s`) uses:
+
+- `apply_filters( 'jqbeb_render_context', $context, $main_query )` at page render. The snapshot is shared by every visitor with the same path and the same URL var names, so it may only hold data that follows from the template and URL shape. Never put per-visitor values in it.
+- `do_action( 'jqbeb_ajax_context_restored', $fake_query, $context, $url_query_vars )` after the query is rebuilt and the visitor's URL vars are applied, before the loop renders. `$fake_query` is also `$wp_query` / `$wp_the_query` during the render. Validate `$url_query_vars` (unslashed strings from the referrer, visitor-controlled) the same way as on a page load and set the prepared vars on `$fake_query`; Etch's main-query loop copies them into its own query. `JSF_Bridge::$in_ajax_render` is true while the loop renders, so the plugin's loop-level `pre_get_posts` hooks still apply.
+- For indexer counts, add the marker key to `jqbeb_jsf_default_query_keys`, so the count query carries it (`s` itself is a default key since 1.3.8).
+
+## Main-query loops on archives (v1.3.8)
+
+Etch's `WpMainQueryLoopHandler` builds its WP_Query from `$wp_query->query_vars` plus the preset args. On a Woo archive those vars carry `jet_smart_filters = woocommerce-archive`, `post_type = ''` and the term only as `product_cat => slug`.
+
+- `tag_query_for_jsf()` replaces any inherited `jet_smart_filters` that does not start with `etch-loop/`.
+- `add_taxonomy_scope()` turns taxonomy query vars into a `tax_query` in the stored defaults (WP's own `parse_tax_query()` on a probe query, duplicates removed) and resolves an empty `post_type` with the rule of `WP_Query::get_posts()`. Category / tag only: WP's default post type stays.
+- `capture_render_context()` keeps taxonomy query vars, so the AJAX render stays in the term.
+- `Relation_Filters` treats `''` as "post type not set".
+
+## Load more (v1.3.8)
+
+JSF appends on load more by finding `providerSelectorData.list || selector` (`.jsf-etch-loop`) INSIDE the response and taking its children. The bridge answers with the wrapper's inner HTML, which only fits `insert`. A request with `props.pages` (JSF sets it only on load more and deletes it on a filter change or a normal page switch; JetEngine's listing grid reads the same signal) gets the inner HTML wrapped in `<div class="jsf-etch-loop">`. Keep JSF pagination blocks outside the wrapper: rendered inside, JSF 3.8.6 registers only the pagination rule during the AJAX render, returns a `query_context` with just `jet_paged`, and the next filter request fails with "Request data is incorrect."
+
+## Page cap (v1.3.8)
+
+`jet_paged` / `pagenum` / `paged` are capped by `JSF_Bridge::clamp_paged()` (`jqbeb_max_paged`, default 1000) in `ajax_get_content`, `merge_jsf_into_query` and `merge_filter_args`.
+
 ## Which path did a request take?
 
-`wp transient get jqbeb_block_$(php -r 'echo md5("/your-path/|default");')`. Present means fast path, absent means loopback. Loading the page yourself warms it, so a single manual page view flips the system to the fast path mid-test.
+`wp transient get jqbeb_block_$(php -r 'echo md5("/your-path/|default");')`. With URL vars, append their sorted names: `md5("/|produkty|post_type,s")`. Present means fast path, absent means loopback. Loading the page yourself warms it, so a single manual page view flips the system to the fast path mid-test.
 
 ## Cache invalidation
 

@@ -73,8 +73,111 @@ class JSF_Bridge {
 	 * path + query_id. JSF_Provider reads this in ajax_get_content() to
 	 * render the loop directly without a full-page HTTP loopback.
 	 */
-	public static function block_cache_key( string $url_path, string $query_id ): string {
-		return 'jqbeb_block_' . md5( $url_path . '|' . $query_id );
+	public static function block_cache_key( string $url_path, string $query_id, array $url_query_vars = [] ): string {
+		// Names only: the values belong to the visitor and are never stored.
+		// Limited to vars that change the template / query shape, so URLs
+		// with arbitrary public vars cannot multiply the cache entries.
+		$names = array_values( array_intersect( array_keys( $url_query_vars ), self::cache_key_query_vars() ) );
+		sort( $names );
+		$variant = $names ? '|' . implode( ',', $names ) : '';
+		return 'jqbeb_block_' . md5( $url_path . '|' . $query_id . $variant );
+	}
+
+	/** @return string[] URL query vars whose presence splits the fast-path cache. */
+	public static function cache_key_query_vars(): array {
+		$vars = [ 's', 'post_type' ];
+		foreach ( get_taxonomies( [], 'objects' ) as $taxonomy ) {
+			if ( ! empty( $taxonomy->query_var ) && is_string( $taxonomy->query_var ) ) {
+				$vars[] = $taxonomy->query_var;
+			}
+		}
+
+		/**
+		 * Filters the URL query vars that get their own fast-path cache entry.
+		 *
+		 * @since 1.3.8
+		 * @param string[] $vars Default `s`, `post_type` and taxonomy query vars.
+		 */
+		$filtered = apply_filters( 'jqbeb_cache_key_query_vars', $vars );
+		return is_array( $filtered ) ? array_filter( $filtered, 'is_string' ) : $vars;
+	}
+
+	/**
+	 * Main-query vars a URL sets through its query string (`?s=…&post_type=product`).
+	 *
+	 * Only WordPress public query vars count, the ones WP::parse_request()
+	 * would copy into the main query; JSF's own URL params and unknown args
+	 * are ignored. `paged` / `page` are left out because the bridge applies
+	 * its own page number. Values are kept as strings only, like WP does.
+	 *
+	 * @param array $args Unslashed query string args.
+	 * @return array<string, string>
+	 */
+	public static function url_query_vars( array $args ): array {
+		global $wp;
+
+		$public = $wp instanceof \WP ? (array) $wp->public_query_vars : [];
+		if ( ! did_action( 'parse_request' ) ) {
+			$public = (array) apply_filters( 'query_vars', $public );
+		}
+		$public = array_diff( $public, [ 'paged', 'page' ] );
+
+		$vars = [];
+		foreach ( $public as $name ) {
+			if ( is_string( $name ) && isset( $args[ $name ] ) && is_scalar( $args[ $name ] ) && '' !== (string) $args[ $name ] ) {
+				$vars[ $name ] = (string) $args[ $name ];
+			}
+		}
+		ksort( $vars );
+		return $vars;
+	}
+
+	/** Query vars from a URL's query string, see url_query_vars(). */
+	public static function url_query_vars_from_url( string $url ): array {
+		$args  = [];
+		$query = wp_parse_url( $url, PHP_URL_QUERY );
+		if ( is_string( $query ) && '' !== $query ) {
+			wp_parse_str( $query, $args );
+		}
+		return self::url_query_vars( $args );
+	}
+
+	/**
+	 * Put the visitor's own URL query vars into the rebuilt main query.
+	 *
+	 * The cached context is shared by every visitor of the same path with
+	 * the same var NAMES, and is stored without their values. The values
+	 * come from this request's referrer, after the same post type check
+	 * WP::parse_request() applies.
+	 */
+	public static function apply_url_query_vars( \WP_Query $query, array $url_query_vars ): void {
+		foreach ( $url_query_vars as $name => $value ) {
+			if ( 'post_type' === $name && ! in_array( $value, get_post_types( [ 'publicly_queryable' => true ] ), true ) ) {
+				unset( $query->query_vars['post_type'] );
+				continue;
+			}
+			$query->set( $name, $value );
+		}
+	}
+
+	/**
+	 * Highest page number the bridge applies to a loop.
+	 *
+	 * JSF accepts any `jet_paged` / `pagenum` / `paged` the browser sends;
+	 * a huge value is an expensive OFFSET for nothing.
+	 */
+	public static function max_paged(): int {
+		/**
+		 * Filters the highest page number applied to an Etch loop.
+		 *
+		 * @since 1.3.8
+		 * @param int $max Default 1000.
+		 */
+		return max( 1, (int) apply_filters( 'jqbeb_max_paged', 1000 ) );
+	}
+
+	public static function clamp_paged( $value ): int {
+		return min( absint( $value ), self::max_paged() );
 	}
 
 	public function __construct() {
@@ -279,7 +382,10 @@ class JSF_Bridge {
 			return;
 		}
 
-		if ( $query->get( 'jet_smart_filters' ) ) {
+		// Already ours. Any other value is inherited: Etch's main-query loop
+		// handler copies the main query's vars, where JSF has put e.g.
+		// `woocommerce-archive` on a Woo archive. The wrapper class decides.
+		if ( str_starts_with( (string) $query->get( 'jet_smart_filters' ), 'etch-loop/' ) ) {
 			return;
 		}
 
@@ -329,7 +435,7 @@ class JSF_Bridge {
 				}
 			}
 
-			self::remember_defaults( $query_id, $default_args );
+			self::remember_defaults( $query_id, self::add_taxonomy_scope( $query, $default_args ) );
 		}
 
 		$this->stack->pop();
@@ -400,6 +506,8 @@ class JSF_Bridge {
 			} elseif ( Relation_Filters::ARG === $key ) {
 				// Resolved server-side and intersected with the baseline ID scope.
 				$base = Relation_Filters::apply( $base, $value );
+			} elseif ( 'paged' === $key ) {
+				$base['paged'] = self::clamp_paged( $value );
 			} else {
 				$base[ $key ] = $value;
 			}
@@ -431,6 +539,8 @@ class JSF_Bridge {
 			'post__in',
 			'post__not_in',
 			'paged',
+			// A search results loop inherits `s` from the main query.
+			's',
 		];
 
 		/**
@@ -444,6 +554,54 @@ class JSF_Bridge {
 		return is_array( $filtered )
 			? array_values( array_unique( array_filter( $filtered, 'is_string' ) ) )
 			: $keys;
+	}
+
+	/**
+	 * Carry a term scope set through taxonomy query vars into the defaults.
+	 *
+	 * A main-query loop on a term archive inherits `product_cat => slug`
+	 * (or `cat`, `tag`, any taxonomy query var) instead of a `tax_query`,
+	 * and `post_type => ''`, because WP_Query only resolves both inside
+	 * get_posts(). The defaults are allowlisted args that the indexer
+	 * runs as a fresh WP_Query, so without this the counts would cover
+	 * every post of the default type. Uses WP's own parser for the
+	 * clauses and the same post type rule as WP_Query::get_posts().
+	 */
+	public static function add_taxonomy_scope( \WP_Query $query, array $args ): array {
+		$probe = new \WP_Query();
+		$vars  = $probe->fill_query_vars( (array) $query->query_vars );
+		unset( $vars['tax_query'] );
+		$probe->parse_tax_query( $vars );
+		if ( ! $probe->tax_query instanceof \WP_Tax_Query ) {
+			return $args;
+		}
+
+		// A term archive sets both `taxonomy`+`term` and the taxonomy's own
+		// query var, which WP turns into two identical clauses.
+		$scope = array_values( array_unique( array_filter( $probe->tax_query->queries, 'is_array' ), SORT_REGULAR ) );
+		if ( ! $scope ) {
+			return $args;
+		}
+		$scope = [ 'relation' => 'AND' ] + $scope;
+
+		$args['tax_query'] = ! empty( $args['tax_query'] ) && is_array( $args['tax_query'] )
+			? [ 'relation' => 'AND', $args['tax_query'], $scope ]
+			: $scope;
+
+		$taxonomies = array_keys( $probe->tax_query->queried_terms );
+		if ( empty( $args['post_type'] ) && array_diff( $taxonomies, [ 'category', 'post_tag' ] ) ) {
+			$types = [];
+			foreach ( get_post_types( [ 'exclude_from_search' => false ] ) as $type ) {
+				$object_taxonomies = 'attachment' === $type ? get_taxonomies_for_attachments() : get_object_taxonomies( $type );
+				if ( array_intersect( $taxonomies, $object_taxonomies ) ) {
+					$types[] = $type;
+				}
+			}
+			sort( $types );
+			$args['post_type'] = ! $types ? 'any' : ( 1 === count( $types ) ? $types[0] : $types );
+		}
+
+		return $args;
 	}
 
 	public function on_render_block( $block_content, $block ) {
@@ -481,14 +639,22 @@ class JSF_Bridge {
 		// `post_id` is kept alongside `context` for backward compat
 		// with cache entries written by 1.2.x — within 1h of upgrade,
 		// in-flight transients with the old shape still resolve.
+		//
+		// Keyed by path, query id and the NAMES of the main-query vars the
+		// URL sets (`/?s=…&post_type=product`), never their values: every
+		// search runs on `/`, and a value in a shared entry would hand one
+		// visitor's search text to the next. The values are dropped from
+		// the snapshot and re-applied from each AJAX request's referrer.
 		if ( ! self::is_loopback() && ! self::$in_ajax_render ) {
-			$cache_key = self::block_cache_key( self::current_path(), $query_id );
+			$url_vars = self::url_query_vars( wp_unslash( $_GET ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$context  = self::capture_render_context();
+			$context['query_vars'] = array_diff_key( $context['query_vars'], $url_vars );
 			set_transient(
-				$cache_key,
+				self::block_cache_key( self::current_path(), $query_id, $url_vars ),
 				[
 					'block'   => $block,
 					'post_id' => (int) get_queried_object_id(),
-					'context' => self::capture_render_context(),
+					'context' => $context,
 				],
 				HOUR_IN_SECONDS
 			);
@@ -606,6 +772,13 @@ class JSF_Bridge {
 				'post_parent', 'post_parent__in', 'post_parent__not_in',
 				'post_status',
 			];
+			// Taxonomy query vars (`product_cat` on a Woo category archive).
+			// A main-query loop inherits its term scope through them.
+			foreach ( get_taxonomies( [], 'objects' ) as $taxonomy ) {
+				if ( ! empty( $taxonomy->query_var ) && is_string( $taxonomy->query_var ) ) {
+					$relevant_keys[] = $taxonomy->query_var;
+				}
+			}
 			$qv = is_array( $wp_query->query_vars ?? null ) ? $wp_query->query_vars : [];
 			foreach ( $relevant_keys as $key ) {
 				if ( ! array_key_exists( $key, $qv ) ) {
@@ -642,7 +815,21 @@ class JSF_Bridge {
 			];
 		}
 
-		return $context;
+		/**
+		 * Filters the main-query snapshot cached for the JSF AJAX fast path.
+		 *
+		 * The entry is shared by every visitor of the same path whose URL
+		 * sets the same query var names, so it must only hold data that
+		 * follows from the template and URL shape, never per-visitor values.
+		 * Re-apply request-specific state in `jqbeb_ajax_context_restored`.
+		 *
+		 * @since 1.3.8
+		 * @param array          $context  Snapshot (`flags`, `query_vars`, `queried_object`).
+		 * @param \WP_Query|null $wp_query Main query being rendered.
+		 */
+		$filtered = apply_filters( 'jqbeb_render_context', $context, $wp_query instanceof \WP_Query ? $wp_query : null );
+
+		return is_array( $filtered ) ? $filtered : $context;
 	}
 
 	/**

@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased (planned 1.3.8)
+
+### Security
+- The JSF AJAX fast path no longer shares one visitor's search with another. The cached main-query snapshot was keyed by URL path and query id only, and every search runs on `/` (`/?s=…&post_type=product`), so a filter click could rebuild the main query with the `s` of whoever last rendered a search, showing that visitor's search results (reproduced on the Poctivá poživeň staging: "syr" turned into "med" results). The key now also holds the NAMES of the main-query vars the URL sets (`s`, `post_type`, taxonomy query vars, filter `jqbeb_cache_key_query_vars`), the snapshot is stored without the values of any public query var, and the values are re-applied from the requesting visitor's own referrer (`post_type` checked like `WP::parse_request()`). Arbitrary public vars in a URL cannot multiply the cache entries.
+- Page numbers from `jet_paged` / `pagenum` / `paged` are capped (`jqbeb_max_paged`, default 1000) on the AJAX path, the loop merge and the HTTP loopback.
+
+### Fixed
+- An Etch main-query loop on a WooCommerce archive inherits the main query's `jet_smart_filters = woocommerce-archive`, so the bridge never tagged it `etch-loop/<qid>`: `[jsf_etch_count]` showed 0 and the loop was missing from `JetSmartFilterSettings.props`. An inherited value that is not `etch-loop/…` is now replaced when the loop sits in a `jsf-etch-loop` wrapper.
+- A main-query loop on a term archive has `post_type = ''` and its term scope only in a taxonomy query var (`product_cat => slug`). Relation filters rejected `['']` as a post type mismatch and returned nothing, and the indexer defaults had neither the post type nor the term scope, so counts were 0 or covered the whole catalog. The defaults now carry the term scope as `tax_query` and the post type WP_Query would resolve, `''` counts as "not set" for relation filters, and the fast-path snapshot keeps taxonomy query vars.
+- JSF pagination "Load more" appended nothing: JSF looks for the provider wrapper inside the response before appending, and the bridge returns the wrapper's inner HTML. Requests JSF marks as load more (`props.pages`, the signal JetEngine's listing grid uses) now get the cards wrapped in `<div class="jsf-etch-loop">`.
+- Indexer counts on a search results loop ignored the search: `s` is now one of the default query keys.
+
+### Added
+- Filter `jqbeb_render_context` and action `jqbeb_ajax_context_restored` so a plugin that prepares the main query in `pre_get_posts` (a search engine marker, accepted search text) can re-apply it to the rebuilt main query of a JSF AJAX render. Contract in `docs/jsf-ajax-path.md`.
+
+### Compatibility
+- Workarounds in Etch loop presets keep working (`jet_smart_filters: ''`, explicit `post_type`, `tax_query` from `$term`) and can be removed after the update.
+- Plain archive and page keys are unchanged; only URLs that set `s`, `post_type` or a taxonomy query var get their own entry.
+
+### Verification
+- Added `php tests/main-query-archive.php` and `php tests/ajax-context-cache.php`, both failing on 1.3.7.
+- Poctivá poživeň staging, template 177 `/kategoria/mliecne-a-syry/` with the loop workarounds removed: `[jsf_etch_count]` 49, `etch-loop/produkty` in props, option counts Rakúsko 4 and Syrex Zázrivá (158) 8; AJAX supplier 158 → 8 cards and count 8, Rakúsko → 4; load more 24 → 48 → 49 unique cards, then a filter replaces them with 4.
+
 ## 1.3.7 - 2026-10-08
 
 ### Fixed
