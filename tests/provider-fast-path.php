@@ -68,6 +68,8 @@ check(request('https://shop.test/kategoria/x/?jsf=etch-loop:produkty&tax=povod:2
 check(request('https://shop.test/?s=syr&post_type=product') === [], 'search referrer never reads the shared snapshot');
 check(request('https://shop.test/kategoria/x/?jsf=woocommerce-archive&_s=med') === [], 'another JSF provider selected in the URL (may change the main query) skips the snapshot');
 check(request('https://shop.test/kategoria/x/', [], ['provider' => 'woocommerce-archive/default']) === [], 'foreign provider in the AJAX request skips the snapshot');
+check(request('https://shop.test/shop/jsf/woocommerce-archive/?_s=med') === [], 'JSF permalink path never reads a snapshot (review round 5)');
+check(request('https://shop.test/shop/jsf/woocommerce-archive/?jsf=etch-loop:produkty') === [], 'JSF permalink path with an explicit Etch selector does not read either');
 check(request('https://shop.test/', [], ['s' => 'syr', 'query' => ['_meta_query_x' => '1']]) === [], 'POST s in the AJAX request itself never reads it either');
 check(request('https://shop.test/', ['s' => 'syr', 'jsf_ajax' => '1']) === [], 'JSF 3.8.6 page-URL request with s never reads it');
 

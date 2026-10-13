@@ -94,7 +94,15 @@ class JSF_Bridge {
 	 *
 	 * @param array $url_args main_query_url_args() of the page URL.
 	 */
-	public static function fast_path_allowed( array $url_args ): bool {
+	public static function fast_path_allowed( array $url_args, string $path = '' ): bool {
+		// JSF's permalink URL structure (`/shop/jsf/<provider>/…`, fixed
+		// rewrite segment `jsf/`) selects providers and filters in the path,
+		// where neither side can tell them apart reliably (an explicit
+		// `?jsf=` overrides the path). Such paths never use the snapshot.
+		if ( preg_match( '#(^|/)jsf/#', $path ) ) {
+			$url_args['jsf_permalink'] = $path;
+		}
+
 		/**
 		 * Filters whether the JSF AJAX fast path (shared main-query snapshot) is used.
 		 * False sends the AJAX render through the loopback, a real request.
@@ -716,7 +724,7 @@ class JSF_Bridge {
 		// never finds an entry written for a clean page.
 		$request_args = wp_unslash( array_merge( $_GET, $_POST ) ); // phpcs:ignore WordPress.Security.NonceVerification
 		if ( ! self::is_loopback() && ! self::$in_ajax_render && ! self::other_jsf_provider_active()
-			&& self::fast_path_allowed( self::main_query_url_args( $request_args ) ) ) {
+			&& self::fast_path_allowed( self::main_query_url_args( $request_args ), self::current_path() ) ) {
 			set_transient(
 				self::block_cache_key( self::current_path(), $query_id ),
 				[

@@ -19,14 +19,17 @@ All notable changes to this project are documented here. The format loosely foll
 ### Added
 - `JSF_Bridge::is_verified_loopback()`: plugins that prepare the main query (search) can tell the bridge's signed loopback from a visitor request, e.g. for per-IP rate limits. Contract in `docs/jsf-ajax-path.md`.
 
+### Known limits
+- Another JSF provider filtering the main query plus JSF filtering of an Etch main-query loop on the same page is not supported: the Etch AJAX render reproduces the page without the other provider's filters.
+
 ### Compatibility
 - Workarounds in Etch loop presets keep working (`jet_smart_filters: ''`, explicit `post_type`, `tax_query` from `$term`) and can be removed after the update.
 - Fast-path keys change once (all entries rebuild on the first page view). Pages with public query vars in the URL (search results, `?product_cat=`, `?author=`) now use the slower loopback for JSF AJAX.
 
 ### Verification
 - Added `php tests/main-query-archive.php`, `php tests/ajax-context-cache.php`, `php tests/provider-fast-path.php`, `php tests/foreign-provider.php` (real JSF query manager) and `php tests/tax-scope-real-parser.php` (real WP_Query / WP_Tax_Query), failing on 1.3.7.
-- Staging also showed that JSF registers `jsf` as a public query var. A `jsf` / `provider` selecting `etch-loop` is ignored by the check (otherwise every filtered archive URL would lose the fast path); another provider still counts, because it can put a search into the main query. At render the bridge also asks JSF which provider it applied, so JSF's permalink form (`/shop/jsf/woocommerce-archive/?_s=…`) never writes a snapshot either; selectors are decoded with JSF's configurable delimiter.
-- Independent review in three rounds (GPT-6 Astra high); round 1 rejected rebuilding the main query from the referrer, round 2 found legacy entries, per-user scope, POST reads and the OR / filter case, round 3 a foreign JSF provider in the URL and WP's `is_tax` guard for the post type, round 4 the same provider in JSF's permalink form and the configurable delimiter, all fixed here.
+- Staging also showed that JSF registers `jsf` as a public query var. A `jsf` / `provider` selecting `etch-loop` is ignored by the check (otherwise every filtered archive URL would lose the fast path); another provider still counts, because it can put a search into the main query. At render the bridge also asks JSF which provider it applied, so JSF's permalink form (`/shop/jsf/woocommerce-archive/?_s=…`) never writes a snapshot either; selectors are decoded with JSF's configurable delimiter. Paths in JSF's permalink structure (`…/jsf/…`) never use the snapshot.
+- Independent review in three rounds (GPT-6 Astra high); round 1 rejected rebuilding the main query from the referrer, round 2 found legacy entries, per-user scope, POST reads and the OR / filter case, round 3 a foreign JSF provider in the URL and WP's `is_tax` guard for the post type, round 4 the same provider in JSF's permalink form and the configurable delimiter, round 5 a snapshot written on a permalink path through an explicit selector (fixed) and the loopback losing another provider's main-query filters (documented as unsupported).
 - Poctivá poživeň staging, template 177 `/kategoria/mliecne-a-syry/` with the loop workarounds removed: `[jsf_etch_count]` 49, `etch-loop/produkty` in props, option counts Rakúsko 4 and Syrex Zázrivá (158) 8; AJAX supplier 158 → 8 cards and count 8, Rakúsko → 4; load more 24 → 48 → 49 unique cards, then a filter replaces them with 4.
 
 ## 1.3.7 - 2026-10-08

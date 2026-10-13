@@ -198,7 +198,8 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		$forwarded += urlencode_deep( $url_args );
 		// This request's own GET / POST too (JSF 3.8.6 posts to the page URL).
 		$fast_path  = JSF_Bridge::fast_path_allowed(
-			$url_args + JSF_Bridge::main_query_url_args( wp_unslash( array_merge( $_GET, $_POST ) ) ) // phpcs:ignore WordPress.Security.NonceVerification
+			$url_args + JSF_Bridge::main_query_url_args( wp_unslash( array_merge( $_GET, $_POST ) ) ), // phpcs:ignore WordPress.Security.NonceVerification
+			(string) ( wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/' )
 		);
 
 		$base_url = strtok( $referrer, '?' );
