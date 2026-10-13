@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 1.3.9 - 2026-10-13
 
 ### Security
 - The loopback's same-origin check on the referrer also compares the port (implicit 80 / 443) and rejects URLs with credentials or without an http(s) scheme. Before, `https://site:8443/…` passed the host-only check and another service on the same host would have received the signed loopback with the visitor's cookies.

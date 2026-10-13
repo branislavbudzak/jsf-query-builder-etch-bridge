@@ -3,7 +3,7 @@ Contributors: branobudzak
 Requires at least: 6.4
 Tested up to: 6.6
 Requires PHP: 8.0
-Stable tag: 1.3.8
+Stable tag: 1.3.9
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -54,6 +54,10 @@ Each bridge runs on its own. Use either, both, or none.
 3. Go to **Settings → JSF Etch Bridge** for usage instructions.
 
 == Changelog ==
+
+= 1.3.9 =
+* Fix: JSF AJAX on a page opened from a filtered URL (shared link, reload after filtering) no longer replays the filter and page from that URL. "Clear all" shows all results again and a new filter starts on page 1. Selection, sorting and page now come only from what JetSmartFilters sends with the click.
+* Security: the AJAX fallback request to the site itself also checks the port of the referring URL and rejects URLs with credentials.
 
 = 1.3.8 =
 * Security: JSF AJAX no longer shows one visitor's search to another. Pages whose main query depends on the request (search `?s=`, other public query vars, another JSF provider, JSF permalink URLs) never use the shared page snapshot; their AJAX render is a real request for the visitor's own URL. Logged-in visitors get their own snapshot, older snapshots are never read again, and the new filter `jqbeb_fast_path_enabled` turns the snapshot off for pages personalized for anonymous visitors.
