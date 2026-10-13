@@ -62,6 +62,7 @@ check(render('/shop/jsf/woocommerce-archive/?_s=med', ['_s' => 'med']) === [], '
 check(JQBEB\JSF_Bridge::other_jsf_provider_active(), 'JSF-selected woocommerce-archive detected');
 select_provider('etch-loop/produkty');
 check(render('/shop/jsf/woocommerce-archive/?jsf=etch-loop:produkty', ['jsf' => 'etch-loop:produkty']) === [], 'explicit Etch selector on a foreign permalink path writes no snapshot (review round 5)');
+check(render('/shop/%6asf/woocommerce-archive/?jsf=etch-loop:produkty', ['jsf' => 'etch-loop:produkty']) === [], 'encoded permalink segment writes no snapshot (review round 6)');
 check(render('/kategoria/x/?jsf=etch-loop:produkty', ['jsf' => 'etch-loop:produkty']) !== [], 'etch-loop selected on a plain URL keeps the fast path');
 select_provider(null);
 check(render('/kategoria/x/') !== [], 'no JSF provider selected keeps the fast path');

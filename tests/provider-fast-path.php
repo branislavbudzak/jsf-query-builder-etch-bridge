@@ -70,6 +70,10 @@ check(request('https://shop.test/kategoria/x/?jsf=woocommerce-archive&_s=med') =
 check(request('https://shop.test/kategoria/x/', [], ['provider' => 'woocommerce-archive/default']) === [], 'foreign provider in the AJAX request skips the snapshot');
 check(request('https://shop.test/shop/jsf/woocommerce-archive/?_s=med') === [], 'JSF permalink path never reads a snapshot (review round 5)');
 check(request('https://shop.test/shop/jsf/woocommerce-archive/?jsf=etch-loop:produkty') === [], 'JSF permalink path with an explicit Etch selector does not read either');
+foreach (['/shop/%6asf/woocommerce-archive/', '/shop/j%73f/woocommerce-archive/', '/shop/jsf%2Fwoocommerce-archive/'] as $encoded) {
+    check(request('https://shop.test' . $encoded . '?_s=med') === [], "encoded permalink segment $encoded never reads (review round 6)");
+}
+check(request('https://shop.test/about-jsf/') !== [], 'a slug merely containing jsf keeps the fast path');
 check(request('https://shop.test/', [], ['s' => 'syr', 'query' => ['_meta_query_x' => '1']]) === [], 'POST s in the AJAX request itself never reads it either');
 check(request('https://shop.test/', ['s' => 'syr', 'jsf_ajax' => '1']) === [], 'JSF 3.8.6 page-URL request with s never reads it');
 

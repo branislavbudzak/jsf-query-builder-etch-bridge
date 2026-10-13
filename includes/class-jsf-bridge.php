@@ -99,7 +99,9 @@ class JSF_Bridge {
 		// rewrite segment `jsf/`) selects providers and filters in the path,
 		// where neither side can tell them apart reliably (an explicit
 		// `?jsf=` overrides the path). Such paths never use the snapshot.
-		if ( preg_match( '#(^|/)jsf/#', $path ) ) {
+		// WP::parse_request() retries the rewrite match on urldecode()d paths
+		// (`/shop/%6asf/…`, `jsf%2F`), so check the decoded form as well.
+		if ( preg_match( '#(^|/)jsf/#i', $path ) || preg_match( '#(^|/)jsf/#i', urldecode( $path ) ) ) {
 			$url_args['jsf_permalink'] = $path;
 		}
 
