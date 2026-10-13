@@ -194,13 +194,14 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				}
 			}
 		}
-		if ( $page_value > 1 ) {
-			if ( empty( $forwarded['pagination'] ) ) {
-				$forwarded['pagination'] = $page_value;
-			}
-			if ( empty( $forwarded['jet_paged'] ) ) {
-				$forwarded['jet_paged'] = $page_value;
-			}
+		if ( $page_value > 1 && empty( $forwarded['pagination'] ) ) {
+			$forwarded['pagination'] = $page_value;
+		}
+		// Always explicit, also page 1: the loopback page may inherit a page
+		// from its path (`/page/2/`, any pagination base) and only an explicit
+		// page overrides that in merge_jsf_into_query().
+		if ( empty( $forwarded['jet_paged'] ) ) {
+			$forwarded['jet_paged'] = max( 1, $page_value );
 		}
 
 		// The page's own args (`?s=…&post_type=product`, site params) come
@@ -215,9 +216,10 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			(string) ( wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/' )
 		);
 
-		// `/page/N/` in the path is the page the page was opened on, like
-		// `pagenum`; the posted page is in $forwarded.
-		$base_url = preg_replace( '#/page/\d+/?$#', '/', (string) strtok( $referrer, '?' ) );
+		// `/page/N/` (the site's pagination base) in the path is the page the
+		// page was opened on, like `pagenum`; the posted page is in $forwarded.
+		$pagination_base = ! empty( $GLOBALS['wp_rewrite']->pagination_base ) ? (string) $GLOBALS['wp_rewrite']->pagination_base : 'page';
+		$base_url        = preg_replace( '#/' . preg_quote( $pagination_base, '#' ) . '/\d+/?$#', '/', (string) strtok( $referrer, '?' ) );
 		$url      = add_query_arg( $forwarded, $base_url );
 
 		// ============================================================
@@ -627,7 +629,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 				}
 			}
 		}
-		if ( $jet_paged > 1 ) {
+		// >= 1: an explicit page 1 (the loopback always sends one) must also
+		// override a page inherited from the main query.
+		if ( $jet_paged >= 1 ) {
 			$query->set( 'paged', $jet_paged );
 		}
 

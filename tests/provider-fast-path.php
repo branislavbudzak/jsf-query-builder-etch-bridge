@@ -96,7 +96,7 @@ $get    = ['s' => 'syr', 'post_type' => 'product', 'jsf' => 'etch-loop:produkty'
 request($opened, $get, ['action' => 'jet_smart_filters', 'provider' => 'etch-loop/produkty']);
 $lb = loopback_args();
 check(($lb['s'] ?? '') === 'syr' && ($lb['post_type'] ?? '') === 'product', 'reset on a page opened with a filter: search kept');
-check(!array_intersect_key($lb, array_flip(['tax', '_tax_query_povod', 'pagenum', 'jet_paged', 'pagination'])), 'reset: the filter and page the page was opened with are not replayed');
+check(!array_intersect_key($lb, array_flip(['tax', '_tax_query_povod', 'pagenum', 'pagination'])) && ($lb['jet_paged'] ?? '') === '1', 'reset: the filter and page the page was opened with are not replayed (explicit page 1)');
 check(($lb['jsf'] ?? '') === 'etch-loop/produkty', 'loopback selects the provider JSF posted');
 request($opened, $get, ['action' => 'jet_smart_filters', 'provider' => 'etch-loop/produkty', 'query' => ['_tax_query_povod' => '19']]);
 $lb = loopback_args();
@@ -116,6 +116,15 @@ foreach (['https://shop.test:8443/kategoria/x/' => 'another port', 'https://user
     check(request($ref, [], ['provider' => 'etch-loop/produkty']) === [] && null === $GLOBALS['loopback'], "referrer rejected: $why (review)");
 }
 check(request('https://shop.test:443/kategoria/x/') !== [], 'explicit default port is the same origin');
+$GLOBALS['wp_rewrite'] = (object) ['pagination_base' => 'strana'];
+request('https://shop.test/sk/kategoria/x/strana/2/', [], ['provider' => 'etch-loop/produkty', 'query' => ['_tax_query_povod' => '23']]);
+check(str_starts_with($GLOBALS['loopback'][0], 'https://shop.test/sk/kategoria/x/?') && (loopback_args()['jet_paged'] ?? '') === '1', 'custom pagination base stripped, explicit page 1 sent (review round 2)');
+unset($GLOBALS['wp_rewrite']);
+// The loopback page itself: an explicit jet_paged=1 overrides a page inherited from the path.
+$_REQUEST = ['jet_paged' => '1'];
+$loop = new WP_Query(); $loop->query_vars = ['post_type' => 'product', 'paged' => 2, 'jet_smart_filters' => 'etch-loop/produkty'];
+(new JQBEB\JSF_Provider())->apply_jsf_to_tagged_query($loop);
+check(($loop->query_vars['paged'] ?? 0) === 1, 'loopback page: explicit jet_paged=1 beats an inherited paged=2 (review round 2)');
 
 // Fast path: the in-process render takes the posted page, not the page URL's pagenum / JSF's jet_paged.
 $page = new ReflectionProperty(JQBEB\JSF_Provider::class, 'ajax_page');
