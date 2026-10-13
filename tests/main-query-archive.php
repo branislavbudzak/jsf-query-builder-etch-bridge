@@ -40,7 +40,7 @@ class WP_Tax_Query {
     public array $queried_terms = [];
     public array $queries;
     public function __construct(array $queries) {
-        $this->queries = ['relation' => 'AND'] + $queries;
+        $this->queries = ['relation' => strtoupper($queries['relation'] ?? 'AND')] + array_filter($queries, 'is_array');
         foreach ($queries as $q) { if (is_array($q) && ($q['operator'] ?? 'IN') !== 'NOT IN') { $this->queried_terms[$q['taxonomy']] = ['terms' => $q['terms']]; } }
     }
 }
@@ -57,6 +57,7 @@ class WP_Query {
     /** Same shape as WP core for taxonomy query vars (WP_Query::parse_tax_query). */
     public function parse_tax_query(&$v) {
         $tax_query = !empty($v['tax_query']) && is_array($v['tax_query']) ? $v['tax_query'] : [];
+        if (!empty($v['taxonomy']) && !empty($v['term'])) { $tax_query[] = ['taxonomy' => $v['taxonomy'], 'field' => 'slug', 'terms' => [$v['term']]]; }
         foreach (get_taxonomies() as $name => $t) {
             if (!empty($v[$t->query_var])) {
                 $tax_query[] = ['taxonomy' => $name, 'field' => 'slug', 'terms' => preg_split('/[,]+/', $v[$t->query_var])];
@@ -135,6 +136,10 @@ check(str_contains($flat, '"product_cat"') && str_contains($flat, '"mliecne-a-sy
 check(str_contains($flat, '"product_visibility"'), 'existing tax_query (Woo visibility) kept');
 check(($defaults['tax_query']['relation'] ?? '') === 'AND', 'term scope AND-ed with the existing tax_query');
 
+$or = JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query(['post_type' => 'product', 'product_cat' => 'syry', 'tax_query' => ['relation' => 'OR', ['taxonomy' => 'povod', 'field' => 'slug', 'terms' => ['at']]]]), ['post_type' => 'product']);
+check($or['tax_query']['relation'] === 'OR' && count(array_filter($or['tax_query'], 'is_array')) === 2, 'var clause joins the explicit tax_query under its own relation, like WP_Query');
+$dup = JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query(['post_type' => '', 'product_cat' => 'syry', 'taxonomy' => 'product_cat', 'term' => 'syry']), []);
+check(count(array_filter($dup['tax_query'], 'is_array')) === 1, 'taxonomy+term duplicate of the query var clause removed');
 $shared = JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query(['post_type' => '', 'povod' => 'rakusko']), []);
 check($shared['post_type'] === ['dodavatel', 'product'], 'taxonomy on several types resolves to all of them');
 $cat = JQBEB\JSF_Bridge::add_taxonomy_scope(new WP_Query(['post_type' => '', 'category_name' => 'zapisky']), []);
@@ -162,7 +167,7 @@ check(JQBEB\Relation_Filters::resolve($plan, ['']) === [101, 102], 'relation res
 check(JQBEB\Relation_Filters::resolve($plan, 'page') === null, 'a real post type mismatch still fails closed');
 check(JQBEB\Relation_Filters::apply(['post_type' => ''], $plan)['post__in'] === [101, 102], 'apply on the inherited empty post_type narrows to the relation');
 
-// Fast path context keeps taxonomy query vars, so the AJAX render stays scoped to the term.
+// Fast path context keeps taxonomy query vars (rewrite-derived on a term archive path), so the AJAX render stays in the term.
 $GLOBALS['wp_query'] = new WP_Query($archive);
 $context = JQBEB\JSF_Bridge::capture_render_context();
 check(($context['query_vars']['product_cat'] ?? null) === 'mliecne-a-syry', 'render context captures the taxonomy query var');

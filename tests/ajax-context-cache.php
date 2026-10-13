@@ -4,6 +4,7 @@
  */
 define('ABSPATH', __DIR__);
 define('HOUR_IN_SECONDS', 3600);
+define('MINUTE_IN_SECONDS', 60);
 $GLOBALS['hooks'] = [];
 function add_filter($tag, $cb, $priority = 10, $argc = 1) { $GLOBALS['hooks'][$tag][$priority][] = [$cb, $argc]; }
 function add_action(...$args) { add_filter(...$args); }
@@ -25,6 +26,7 @@ function get_queried_object() { return null; }
 function get_queried_object_id() { return 0; }
 $GLOBALS['transients'] = [];
 function set_transient($k, $v, $t) { $GLOBALS['transients'][$k] = $v; }
+function wp_salt($s) { return 'test-salt'; }
 class WP { public array $public_query_vars = ['s', 'post_type', 'paged', 'author', 'orderby', 'product_cat']; }
 $GLOBALS['wp'] = new WP();
 class WP_Query {
@@ -46,38 +48,48 @@ function check($condition, $label) {
     if (!$condition) { $failures++; }
 }
 
-$a = JSF_Bridge::url_query_vars_from_url('https://shop.test/?s=syr&post_type=product&jsf=etch-loop:produkty&tax=povod:23&utm_source=x&paged=3');
-check($a === ['post_type' => 'product', 's' => 'syr'], 'only public main-query vars, JSF params / utm / paged ignored');
-$b = JSF_Bridge::url_query_vars_from_url('https://shop.test/?post_type=product&s=med');
-check(JSF_Bridge::block_cache_key('/', 'produkty', $a) === JSF_Bridge::block_cache_key('/', 'produkty', $b), 'two searches share the entry (key has names, not values)');
-check(JSF_Bridge::block_cache_key('/', 'produkty', $a) !== JSF_Bridge::block_cache_key('/', 'produkty', []), 'search and front page on / get separate entries');
-check(JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty', []) === 'jqbeb_block_' . md5('/kategoria/x/|produkty'), 'plain archive key unchanged from 1.3.7');
-$noisy = JSF_Bridge::url_query_vars_from_url('https://shop.test/kategoria/x/?author=1&orderby=title');
-check(JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty', $noisy) === JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty', []), 'arbitrary public vars cannot multiply cache entries');
-check(JSF_Bridge::url_query_vars(['s' => ['a', 'b']]) === [], 'array values ignored');
+$a = JSF_Bridge::main_query_url_args_from_url('https://shop.test/?s=syr&post_type[]=product&jsf=etch-loop:produkty&tax=povod:23&utm_source=x&paged=3');
+check($a === ['s' => 'syr', 'post_type' => ['product']], 'public main-query vars kept raw (arrays too), JSF params / utm / paged ignored');
+check(JSF_Bridge::main_query_url_args_from_url('https://shop.test/kategoria/x/?jsf=etch-loop:produkty&tax=povod:23&pagenum=2') === [], 'JSF filter URL of an archive keeps the fast path');
+check(JSF_Bridge::block_cache_key('/kategoria/x/', 'produkty') === 'jqbeb_block_' . md5('/kategoria/x/|produkty'), 'archive key unchanged from 1.3.7');
 
-// Render: snapshot stored without the visitor's search text.
-$GLOBALS['wp_query'] = new WP_Query(['s' => 'tajne-hladanie', 'post_type' => 'product', 'posts_per_page' => 24]);
-$GLOBALS['wp_query']->is_search = true;
-$_GET = ['s' => 'tajne-hladanie', 'post_type' => 'product'];
-$_SERVER['REQUEST_URI'] = '/?s=tajne-hladanie&post_type=product';
 $bridge = new JSF_Bridge();
 $block  = ['blockName' => 'etch/element', 'attrs' => ['attributes' => ['class' => 'jsf-etch-loop jsf-etch-q-produkty']], 'innerBlocks' => []];
-$bridge->on_render_block('<ul></ul>', $block);
-$key = JSF_Bridge::block_cache_key('/', 'produkty', ['s' => '', 'post_type' => '']);
-check(isset($GLOBALS['transients'][$key]), 'render writes the search variant entry');
-check(!str_contains(serialize($GLOBALS['transients']), 'tajne-hladanie'), 'search text never stored');
-check(($GLOBALS['transients'][$key]['context']['flags']['is_search'] ?? null) === true, 'search flags kept');
-check(($GLOBALS['transients'][$key]['context']['query_vars']['posts_per_page'] ?? null) === 24, 'other context vars kept');
+$key    = JSF_Bridge::block_cache_key('/', 'produkty');
 
-// Restore: values come from this visitor's referrer.
-add_filter('jqbeb_render_context', static fn($c) => $c + ['extra' => 'marker']);
-check((JSF_Bridge::capture_render_context()['extra'] ?? '') === 'marker', 'jqbeb_render_context filter can extend the snapshot');
-$fake = JSF_Bridge::build_context_query($GLOBALS['transients'][$key]['context']);
-JSF_Bridge::apply_url_query_vars($fake, JSF_Bridge::url_query_vars_from_url('https://shop.test/?s=med&post_type=product'));
-check($fake->get('s') === 'med' && $fake->get('post_type') === 'product', 'rebuilt query uses the requesting visitor\'s search');
-JSF_Bridge::apply_url_query_vars($fake, ['post_type' => 'shop_order']);
-check(!isset($fake->query_vars['post_type']), 'non publicly queryable post_type dropped like WP::parse_request');
+// Search page (GET): no shared snapshot at all.
+$GLOBALS['wp_query'] = new WP_Query(['s' => 'tajne-hladanie', 'post_type' => 'product', 'author__in' => [5]]);
+$_GET = ['s' => 'tajne-hladanie', 'post_type' => 'product'];
+$_POST = [];
+$_SERVER['REQUEST_URI'] = '/?s=tajne-hladanie&post_type=product';
+$bridge->on_render_block('<ul></ul>', $block);
+check(!isset($GLOBALS['transients'][$key]), 'search page writes no shared snapshot');
+check(!str_contains(serialize($GLOBALS['transients']), 'tajne-hladanie'), 'search text never stored');
+
+// POST search and author archive by query string: same.
+$_GET = []; $_POST = ['s' => 'post-hladanie'];
+$bridge->on_render_block('<ul></ul>', $block);
+$_POST = []; $_GET = ['author' => '5'];
+$bridge->on_render_block('<ul></ul>', $block);
+check($GLOBALS['transients'] === [], 'POST search and ?author= write no snapshot');
+
+// Plain page: snapshot as before.
+$_GET = ['utm_source' => 'x'];
+$GLOBALS['wp_query'] = new WP_Query(['posts_per_page' => 24]);
+$bridge->on_render_block('<ul></ul>', $block);
+check(isset($GLOBALS['transients'][$key]), 'plain page still cached for the fast path');
+
+// Loopback signature: only the bridge can produce it.
+$_SERVER['HTTP_X_JQBEB_LOOPBACK'] = '1';
+check(!JSF_Bridge::is_verified_loopback(), 'header alone is not a verified loopback');
+$_SERVER['HTTP_X_JQBEB_LOOPBACK_SIGNATURE'] = time() . '.' . str_repeat('0', 64);
+check(!JSF_Bridge::is_verified_loopback(), 'forged signature rejected');
+$_SERVER['HTTP_X_JQBEB_LOOPBACK_SIGNATURE'] = JSF_Bridge::loopback_signature(time() - 600);
+check(!JSF_Bridge::is_verified_loopback(), 'expired signature rejected');
+$_SERVER['HTTP_X_JQBEB_LOOPBACK_SIGNATURE'] = JSF_Bridge::loopback_signature(time());
+check(JSF_Bridge::is_verified_loopback(), 'fresh signed loopback verified');
+unset($_SERVER['HTTP_X_JQBEB_LOOPBACK']);
+check(!JSF_Bridge::is_verified_loopback(), 'signature without the loopback header rejected');
 
 // Page cap.
 check(JSF_Bridge::clamp_paged('999999') === 1000 && JSF_Bridge::clamp_paged('3') === 3, 'paged capped at 1000 by default');

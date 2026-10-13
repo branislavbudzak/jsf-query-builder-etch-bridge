@@ -148,6 +148,9 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// truncate or split the loopback query string.
 		$forwarded = urlencode_deep( wp_unslash( $_REQUEST ) );
 		unset( $forwarded['action'], $forwarded['defaults'] );
+		// JSF 3.8.6 AJAX transport, sent to the page URL. `jsf_ajax=1` on the
+		// loopback makes WordPress answer with an empty 302.
+		unset( $forwarded['jsf_ajax'], $forwarded['settings'], $forwarded['query_context'], $forwarded['indexing_filters'], $forwarded['dynamic_range'], $forwarded['referrer'] );
 
 		if ( ! empty( $forwarded['query'] ) && is_array( $forwarded['query'] ) ) {
 			foreach ( $forwarded['query'] as $k => $v ) {
@@ -189,9 +192,10 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		}
 
 		// The page's own main-query vars (`?s=…&post_type=product`) travel in
-		// the referrer, not in an admin-ajax request.
-		$url_vars  = JSF_Bridge::url_query_vars_from_url( $referrer );
-		$forwarded += urlencode_deep( $url_vars );
+		// the referrer, not in an admin-ajax request. Such a page never uses
+		// the shared fast-path snapshot, see JSF_Bridge::main_query_url_args().
+		$url_args   = JSF_Bridge::main_query_url_args_from_url( $referrer );
+		$forwarded += urlencode_deep( $url_args );
 
 		$base_url = strtok( $referrer, '?' );
 		$url      = add_query_arg( $forwarded, $base_url );
@@ -216,8 +220,8 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 		// referrer) we fall through to the HTTP loopback below.
 		// ============================================================
 		$referrer_path    = wp_parse_url( $referrer, PHP_URL_PATH ) ?: '/';
-		$direct_cache_key = JSF_Bridge::block_cache_key( $referrer_path, $query_id, $url_vars );
-		$direct_cached    = get_transient( $direct_cache_key );
+		$direct_cache_key = JSF_Bridge::block_cache_key( $referrer_path, $query_id );
+		$direct_cached    = $url_args ? false : get_transient( $direct_cache_key );
 
 		if ( is_array( $direct_cached ) && ! empty( $direct_cached['block'] ) ) {
 
@@ -249,24 +253,8 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			if ( $context ) {
 				$fake_query = JSF_Bridge::build_context_query( $context );
 				if ( $fake_query instanceof \WP_Query ) {
-					JSF_Bridge::apply_url_query_vars( $fake_query, $url_vars );
 					$GLOBALS['wp_query']     = $fake_query;
 					$GLOBALS['wp_the_query'] = $fake_query;
-
-					/**
-					 * Fires after the main query is rebuilt for a JSF AJAX render,
-					 * before the loop renders. The rebuilt query never runs, so
-					 * `pre_get_posts` does not see it: a plugin that prepares the
-					 * main query there (search engine marker, accepted search
-					 * text) re-applies the same vars here. Etch's main-query loop
-					 * copies them into its own query.
-					 *
-					 * @since 1.3.8
-					 * @param \WP_Query $fake_query     Rebuilt main query, also in $wp_query.
-					 * @param array     $context        Cached snapshot it was built from.
-					 * @param array     $url_query_vars This visitor's URL query vars (unslashed strings).
-					 */
-					do_action( 'jqbeb_ajax_context_restored', $fake_query, $context, $url_vars );
 				}
 			}
 
@@ -384,7 +372,8 @@ class JSF_Provider extends \Jet_Smart_Filters_Provider_Base {
 			'sslverify'   => apply_filters( 'jqbeb_loopback_sslverify', true ),
 			'cookies'     => $cookies,
 			'headers'     => [
-				'X-JQBEB-Loopback' => '1',
+				'X-JQBEB-Loopback'           => '1',
+				'X-JQBEB-Loopback-Signature' => JSF_Bridge::loopback_signature( time() ),
 			],
 		] );
 
