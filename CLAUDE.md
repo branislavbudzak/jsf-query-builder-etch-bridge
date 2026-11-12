@@ -77,6 +77,10 @@ pre_get_terms     p10    JE bridge (Terms base type)
 render_block      p5     JE loop-context bridge restores the stashed
                           current_object (paired with the p5 stash above)
 render_block      p999   safety-net pop for both bridges
+pre_render_block  PHP_INT_MAX  JSF buffer guard notes ob_get_level() for
+                          jet-smart-filters/* blocks (only when $pre is null)
+render_block      PHP_INT_MIN  JSF buffer guard discards buffers the JSF
+                          block left open
 wp_footer         p5     JSF bridge outputs window.JQBEBData (BEFORE wp_print_footer_scripts at p20)
 ```
 
@@ -96,6 +100,7 @@ wp_footer         p5     JSF bridge outputs window.JQBEBData (BEFORE wp_print_fo
 - Fast-path snapshot (v1.3.8): key `jqbeb_ctx2_` + path + query id + user id (logged-in visitors isolated, anonymous shared; the prefix retires 1.3.7 `jqbeb_block_*` entries). A request whose main query depends on WP public query vars in GET / POST (`/?s=…`) never writes or reads it (`fast_path_allowed()`, same check on both sides, filter `jqbeb_fast_path_enabled` for anonymous personalization) and goes through the signed loopback; never rebuild such a request from the referrer. Another JSF provider applied in the request (asked from JSF itself) blocks writing; paths with JSF's permalink segment `jsf/` never write or read. Regressions: `php tests/ajax-context-cache.php`, `php tests/provider-fast-path.php`, `php tests/foreign-provider.php`.
 - Etch main-query loops (v1.3.8) inherit the main query's vars: a foreign `jet_smart_filters` tag is replaced, taxonomy query vars are COPIED into the indexer defaults (never translated to tax_query: WP joins them after the JSF merge), `post_type = ''` is resolved like WP_Query, `''` is "not set" for relation filters. Regressions: `php tests/main-query-archive.php`, `php tests/tax-scope-real-parser.php` (real WP parser).
 - JSF AJAX state (v1.3.9): selection, sort and page come ONLY from the POST body. JSF 3.8.6 posts to the page URL with its original query string (`tax=…`, `pagenum=…`, turned into `$_REQUEST['jet_paged']`), so never read `$_REQUEST` / `$_GET` for filters or paging in the AJAX path; the loopback adds `JSF_Bridge::page_url_args()` (page URL minus JSF params). Regression: `php tests/provider-fast-path.php`.
+- JSF buffer guard (unreleased, after 1.3.9): JSF 3.8.4 to 3.8.6.3 `includes/blocks/base.php` block `render()` returns '' for a filter with no options WITHOUT closing the outer `ob_start()` that holds the filter's wrapper `<div>`. In a block theme the template renders before `<!DOCTYPE html>`, so the whole page lands in the orphaned buffer and the response starts with `<div class="jet-smart-filters-…">` (blank archives on Poctivá poživeň staging 2026-11-12). `JSF_Buffer_Guard` notes the level at `pre_render_block` `PHP_INT_MAX` and pops removable buffers at `render_block` `PHP_INT_MIN`. Keep these extreme priorities: a later `pre_render_block` short-circuit would leave a level on the stack, and other `render_block` callbacks must not see the leak. It coexists with the identical poziven-core-logic module `filter-guard`: both note the same level, the first closes, the second finds the level restored and does nothing. Opt out `jqbeb_jsf_buffer_guard_enabled`. Regression: `php tests/jsf-buffer-guard.php`.
 - Load more (v1.3.8): requests with `props.pages` get the inner HTML wrapped in `<div class="jsf-etch-loop">`, otherwise JSF appends nothing. JSF 3.8.6 posts AJAX to the page URL, so `wp_doing_ajax()` is false there; use `JSF_Bridge::$in_ajax_render`.
 
 ## Wrapper class conventions
@@ -124,6 +129,7 @@ includes/
   class-relation-filters.php            JetEngine relation filters for etch-loop: extract, resolve, intersect, relation-table counts
   class-je-query-builder-bridge.php     JE type dispatch (Posts / Users / Terms / Merged / SQL / Data Stores) + CMT redirect
   class-je-loop-context-bridge.php      per-block current_object sync to the topmost Etch loop entry
+  class-jsf-buffer-guard.php            closes output buffers a JSF block leaves open (empty filter swallowing a block-theme page)
   class-shortcode.php                   [jsf_etch_count] shortcode
   class-admin-page.php                  Settings → JSF Etch Bridge (English docs, conditional sections)
   class-debug.php                       pagination diagnostics to the browser console, off unless define( 'JQBEB_DEBUG_PAGINATION', true )
@@ -147,6 +153,7 @@ docs/                                   agent deep dives (not shipped in the ZIP
 - `jqbeb_empty_state_default_hide_enabled` (`true`) - disable the injected CSS that hides `.jsf-etch-empty-state:not(.is-active)` and ship your own.
 - `jqbeb_count_late_substitution_enabled` (`true`) - disable the output buffer that fills in `[jsf_etch_count]` values late on the front end.
 - `jqbeb_fast_path_enabled` (v1.3.8, `$allowed`, `$url_args`) - return false for pages whose main query is personalized for anonymous visitors; they then use the loopback.
+- `jqbeb_jsf_buffer_guard_enabled` (unreleased, `true`) - return false to drop the JSF output-buffer guard. Read once at `plugins_loaded`, so add it from a mu-plugin or another plugin's main file.
 - `jqbeb_max_paged` (v1.3.8, `1000`) - highest page number applied to a loop from `jet_paged` / `pagenum` / `paged`.
 - `JSF_Bridge::is_verified_loopback()` (v1.3.8) - true only for the bridge's own signed loopback (`X-JQBEB-Loopback-Signature`), e.g. to keep it out of a per-IP rate limit. Contract in `docs/jsf-ajax-path.md`.
 

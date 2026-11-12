@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+- A JetSmartFilters filter with no options (e.g. a taxonomy whose terms have no posts) no longer blanks a block-theme page. JSF 3.8.4 to 3.8.6.3 (`includes/blocks/base.php`, block `render()`) returns '' for such a filter without closing the output buffer that holds its wrapper `<div>`; in Etch the template renders before `<!DOCTYPE html>`, so the response started with the unclosed filter `<div>` and the browser nested the whole page inside a filter JSF hides (every product archive on the Poctivá poživeň staging was blank on 2026-11-12). New `JSF_Buffer_Guard` notes the buffer level before each `jet-smart-filters/*` block and discards the buffers the block left open. Opt out with the filter `jqbeb_jsf_buffer_guard_enabled`. It coexists with the equivalent poziven-core-logic module `filter-guard`: the second guard finds nothing left to close.
+
+### Verification
+- `php tests/jsf-buffer-guard.php`: bug reproduced without the guard; with it the page starts with the doctype, filters with options, nested JSF blocks, non-JSF leaks, short-circuited blocks and non-removable buffers are untouched, and two guards on one site do not fight.
+- LocalWP Nearcharger (WP 7.0.3, PHP 8.2, JSF 3.8.4, Etch 1.6.4, block theme), temporary checkboxes filter over a taxonomy with no used terms on a temporary page: with the guard the response starts with `<!DOCTYPE html>`, with the guard filtered off it starts with `<div class="jet-smart-filters-checkboxes jet-filter " …>`.
+
 ## 1.3.9 - 2026-10-13
 
 ### Security
