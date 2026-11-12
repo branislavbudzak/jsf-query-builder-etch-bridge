@@ -18,6 +18,7 @@ class Plugin {
 	public ?JE_Query_Builder_Bridge $je_bridge = null;
 	public ?JE_Loop_Context_Bridge $je_loop_context_bridge = null;
 	public ?Shortcode $shortcode = null;
+	public ?JSF_Buffer_Guard $jsf_buffer_guard = null;
 	public ?Admin_Page $admin_page = null;
 
 	public static function instance(): Plugin {
@@ -56,6 +57,13 @@ class Plugin {
 
 			require_once JQBEB_DIR . 'includes/class-shortcode.php';
 			$this->shortcode = new Shortcode();
+
+			// A JSF filter block with no options leaves an output buffer open
+			// and swallows the rest of a block-theme page. See the class doc.
+			if ( apply_filters( 'jqbeb_jsf_buffer_guard_enabled', true ) ) {
+				require_once JQBEB_DIR . 'includes/class-jsf-buffer-guard.php';
+				$this->jsf_buffer_guard = new JSF_Buffer_Guard();
+			}
 		}
 
 		// JE bridge MUST defer to init p0. JetEngine registers
